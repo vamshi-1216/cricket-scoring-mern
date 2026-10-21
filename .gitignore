@@ -147,3 +147,29 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+
+
+# Cricket Scoring System - additional exclusions
+
+# Runtime logs
+*.log
+logs/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Local databases and temporary files
+*.sqlite
+*.sqlite3
+*.db
+
+# Local secrets and certificates
+*.pem
+*.key
+secrets/
+
+# Operating system files
+.DS_Store
+Thumbs.db
