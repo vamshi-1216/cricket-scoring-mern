@@ -63,3 +63,30 @@ None found.
   - `services/match-service/src/modules/matches/match.service.js:239-260`
 - Matches without established scoring ownership fail closed for permit acquisition.
   - `services/match-service/src/modules/matches/match.service.js:239-260`
+
+## Phase E Match Finalization Permit-Draining Review
+
+Reviewed 2026-11-02. Static, read-only review of Phase E and directly related Phase C/D code. No runtime verification was performed.
+
+### CRITICAL
+
+None found.
+
+### HIGH
+
+None found.
+
+### MEDIUM
+
+- The completed-match fast path in `beginFinalization` may report completion without checking ACTIVE permits or unresolved operations. This is reachable for legacy matches completed before Phase E, whose earlier finalization path did not drain permits. With no pending operation created, recovery will not revisit those permits. Before returning `COMPLETED`, verify the active permit count and records and reconcile only from definitive journal outcomes; unresolved legacy state must remain fail-closed and recoverable.
+  - `services/match-service/src/modules/matches/match.service.js:1646-1680` — `beginFinalization`
+- The unique `(matchId, permitId)` index may be incompatible with legacy ScoringOperation records lacking `permitId`. Multiple missing values for the same match can conflict on the unique index, and startup awaits index creation, potentially preventing Scoring Service startup. Migrate or otherwise resolve legacy records before index creation, or use a partial unique index restricted to valid `permitId` values.
+  - `services/scoring-service/src/modules/scoring-operations/scoring-operation.model.js:57-59`
+
+### PASSED
+
+- Normal permit reconciliation releases only after a definitive `COMMITTED` or `ABORTED` journal outcome; no age-based or forced release path was found.
+- Result, awards, completed status, closed permit gate, and finalization history are persisted together in the Match Service transaction.
+- Unknown transaction outcomes remain pending/recoverable rather than being treated as aborts or confirmed completion.
+- Conditional worker claims and claim-ID fencing prevent competing workers from persisting duplicate results/history.
+- Transfer/reclaim and finalization are coordinated through the permit gate and pending-operation checks; matching retries reuse the existing operation and conflicting requests are rejected.
