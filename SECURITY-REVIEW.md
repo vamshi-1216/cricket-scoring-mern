@@ -30,3 +30,36 @@ None found.
 - Inspected handlers do not return or log the secret/header. Finalization retains its completed-result idempotency and conditional atomic result/awards update; retry state remains handled by Scoring Service.
   - `services/match-service/src/modules/matches/match.service.js:923-981`
   - `services/scoring-service/src/modules/innings/innings.service.js:167-217,955-965`
+
+## Phase A Scoring Permit Infrastructure Review
+
+Reviewed 2026-11-02. Read-only source review; no tests, builds, lint, type checks, or migrations were run. No `.env` values or secrets were read.
+
+### CRITICAL
+
+None found.
+
+### HIGH
+
+- Transfer, reclaim, and finalization can leave permits active. These flows do not close the permit gate or wait for `activePermitCount` to drain; permit status retrieval also does not check the current scorer, permission version, or match status. An old permit can therefore continue to appear active after access changes or finalization.
+  - `services/match-service/src/modules/matches/match.service.js:1171-1211,1259-1313,1316-1384` — `finalizeMatch`, `transferScoringAccess`, `reclaimScoringAccess`
+  - `services/match-service/src/modules/matches/match.service.js:376-382` — `getScoringPermitStatus`
+
+### MEDIUM
+
+- Reusing a request ID returns the existing permit before checking its state or current match access. A released permit can therefore be returned in a successful acquisition response; callers must not treat that response as proof that a permit is active.
+  - `services/match-service/src/modules/matches/match.service.js:170-181,218-237,306-310` — `assertDuplicatePermitMatches`, `acquireScoringPermit`
+  - `services/match-service/src/modules/matches/match.controller.js:153-163` — `acquireScoringPermit`
+
+### PASSED
+
+- Permit creation and active-count increment share a MongoDB transaction. Release state transition and count decrement also share a transaction; release checks the active state and requires a positive count before decrementing.
+  - `services/match-service/src/modules/matches/match.service.js:194-215,316-374` — `runScoringPermitTransaction`, `acquireScoringPermit`, `releaseScoringPermit`
+- Unique indexes cover `permitId` and `(matchId, requestId)`. Startup awaits index creation; no TTL index is defined.
+  - `services/match-service/src/modules/matches/scoring-permit.model.js:5,26-30`
+  - `services/match-service/src/config/database.js:8-11`
+- Permit endpoints use internal-service authentication. Acquisition verifies the submitted scorer ID and permission version against the current Match record. No direct scorer-ID impersonation path was identified in the reviewed endpoints.
+  - `services/match-service/src/modules/matches/match.routes.js:14-27`
+  - `services/match-service/src/modules/matches/match.service.js:239-260`
+- Matches without established scoring ownership fail closed for permit acquisition.
+  - `services/match-service/src/modules/matches/match.service.js:239-260`
