@@ -6,6 +6,12 @@ const envSchema = z.object({
   MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
   FRONTEND_ORIGIN: z.string().url().default("http://localhost:5173"),
   MATCH_SERVICE_URL: z.string().url().default("http://localhost:4003"),
+  AUTH_SERVICE_URL: z.string().url().default("http://localhost:4001"),
+  INTERNAL_SERVICE_SECRET: z
+    .string()
+    .min(32)
+    .refine((value) => /\S/.test(value), "INTERNAL_SERVICE_SECRET cannot be blank.")
+    .optional(),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 

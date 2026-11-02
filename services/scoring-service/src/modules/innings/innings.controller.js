@@ -17,7 +17,8 @@ export async function setPlayers(req, res, next) {
   try {
     const innings = await inningsService.setInningsPlayers(
       req.params.inningsId,
-      req.body
+      req.body,
+      req.scoringAuthorization
     );
 
     res.status(200).json({
@@ -34,7 +35,9 @@ export async function recordDelivery(req, res, next) {
   try {
     const scorecard = await inningsService.recordDelivery(
       req.params.inningsId,
-      req.body
+      req.body,
+      req.scoringAuthorization,
+      req.user.id
     );
 
     res.status(201).json({

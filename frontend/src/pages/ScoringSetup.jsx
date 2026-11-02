@@ -6,6 +6,8 @@ const SCORING_API_URL =
   import.meta.env.VITE_SCORING_API_URL || "http://localhost:4005";
 const MATCH_API_URL =
   import.meta.env.VITE_MATCH_API_URL || "http://localhost:4003/api/v1/matches";
+const AUTH_API_URL =
+  import.meta.env.VITE_API_URL || "http://localhost:4001/api/v1/auth";
 const TEAM_API_URL =
   import.meta.env.VITE_TEAM_API_URL || "http://localhost:4004/api/v1/teams";
 const PLAYER_API_URL =
@@ -875,7 +877,7 @@ function WicketPanel({
   );
 }
 
-export default function ScoringSetup() {
+export default function ScoringSetup({ user }) {
   const { matchId } = useParams();
   const [innings, setInnings] = useState(null);
   const [allInnings, setAllInnings] = useState([]);
@@ -899,6 +901,13 @@ export default function ScoringSetup() {
   const [noBallSource, setNoBallSource] = useState("BAT");
   const [menuOpen, setMenuOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [targetScorerId, setTargetScorerId] = useState("");
+  const [targetScorerSearch, setTargetScorerSearch] = useState("");
+  const [targetScorerOptions, setTargetScorerOptions] = useState([]);
+  const [targetScorerSearchError, setTargetScorerSearchError] = useState("");
+  const [changingAccess, setChangingAccess] = useState(false);
+  const [permissionFresh, setPermissionFresh] = useState(false);
+  const [permissionRefreshError, setPermissionRefreshError] = useState("");
   const keyHandlerRef = useRef(() => {});
 
   useEffect(() => {
@@ -906,6 +915,7 @@ export default function ScoringSetup() {
 
     async function loadScorecard() {
       setLoading(true);
+      setPermissionFresh(false);
       setError("");
       setInnings(null);
       setAllInnings([]);
@@ -918,34 +928,50 @@ export default function ScoringSetup() {
 
       try {
         const [inningsResult, matchResult, playerResponse] = await Promise.all([
-          apiRequest(`${SCORING_API_URL}/api/v1/matches/${matchId}/innings`),
+          apiRequest(`${SCORING_API_URL}/api/v1/matches/${matchId}/innings`).catch(
+            (inningsError) => {
+              if (inningsError.message === "No innings found for this match.") {
+                return { data: { innings: [] } };
+              }
+              throw inningsError;
+            }
+          ),
           apiRequest(`${MATCH_API_URL}/${matchId}`),
           apiRequest(PLAYER_API_URL)
             .then((result) => ({ result }))
             .catch((playerError) => ({ error: playerError })),
         ]);
         const allInnings = inningsResult.data?.innings;
-        const currentInnings =
-          (Array.isArray(allInnings)
-            ? [...allInnings].sort(
+        const currentInnings = Array.isArray(allInnings)
+          ? [...allInnings].sort(
                 (left, right) => right.inningsNumber - left.inningsNumber
-              )[0]
-            : null) ||
-          (
+              )[0] || null
+          : (
             await apiRequest(
               `${SCORING_API_URL}/api/v1/matches/${matchId}/scorecard`
             )
           ).data;
-        const savedMatch = matchResult.data;
-        if (!currentInnings?._id) {
-          throw new Error("No innings has been initialized for this match.");
+        let accessResult = null;
+        let accessLoadError = "";
+        if (user) {
+          try {
+            accessResult = await apiRequest(
+              `${MATCH_API_URL}/${matchId}/scoring-access`
+            );
+          } catch (accessError) {
+            accessLoadError = accessError.message || "Unable to verify scoring access.";
+          }
         }
+        const savedMatch = accessResult?.data
+          ? { ...matchResult.data, scoringAccess: accessResult.data }
+          : matchResult.data;
 
         const [teamAResult, teamBResult] = await Promise.all([
           apiRequest(`${TEAM_API_URL}/${savedMatch.teamAId}`),
           apiRequest(`${TEAM_API_URL}/${savedMatch.teamBId}`),
         ]);
         const historyResult =
+          currentInnings &&
           savedMatch.status !== "completed" &&
           currentInnings.status !== "COMPLETED"
             ? await apiRequest(
@@ -959,8 +985,16 @@ export default function ScoringSetup() {
 
         if (!cancelled) {
           setInnings(currentInnings);
-          setAllInnings(Array.isArray(allInnings) ? allInnings : [currentInnings]);
+          setAllInnings(
+            Array.isArray(allInnings)
+              ? allInnings
+              : currentInnings
+                ? [currentInnings]
+                : []
+          );
           setMatch(savedMatch);
+          setPermissionFresh(!user || Boolean(accessResult?.data));
+          setPermissionRefreshError(accessLoadError);
           setTeams([teamAResult.data, teamBResult.data]);
           setPlayersById(playerMap);
           setPlayerDataWarning(
@@ -970,9 +1004,9 @@ export default function ScoringSetup() {
           );
           setRecentDeliveries(historyResult?.data?.deliveries || []);
           setSelection({
-            strikerId: idOf(currentInnings.strikerId),
-            nonStrikerId: idOf(currentInnings.nonStrikerId),
-            bowlerId: idOf(currentInnings.currentBowlerId),
+            strikerId: idOf(currentInnings?.strikerId),
+            nonStrikerId: idOf(currentInnings?.nonStrikerId),
+            bowlerId: idOf(currentInnings?.currentBowlerId),
           });
         }
       } catch (loadError) {
@@ -988,7 +1022,82 @@ export default function ScoringSetup() {
     return () => {
       cancelled = true;
     };
-  }, [matchId, reloadKey]);
+  }, [matchId, reloadKey, user?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshMatchAccess = async () => {
+      try {
+        const result = await apiRequest(
+          user
+            ? `${MATCH_API_URL}/${matchId}/scoring-access`
+            : `${MATCH_API_URL}/${matchId}`
+        );
+        if (!cancelled && result.data) {
+          if (user) {
+            setMatch((current) => ({
+              ...current,
+              status: result.data.matchStatus || current?.status,
+              scoringAccess: result.data,
+            }));
+          } else {
+            setMatch(result.data);
+          }
+          setPermissionFresh(true);
+          setPermissionRefreshError("");
+        }
+      } catch (refreshError) {
+        if (!cancelled) {
+          setPermissionFresh(false);
+          setPermissionRefreshError(
+            refreshError.message || "Unable to refresh scoring permissions."
+          );
+        }
+      }
+    };
+    const intervalId = window.setInterval(() => {
+      void refreshMatchAccess();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [matchId, user?.id]);
+
+  useEffect(() => {
+    const query = targetScorerSearch.trim();
+    if (!user || query.length < 2) {
+      setTargetScorerOptions([]);
+      setTargetScorerSearchError("");
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timerId = window.setTimeout(async () => {
+      try {
+        const result = await apiRequest(
+          `${AUTH_API_URL}/scoring-transfer-targets?query=${encodeURIComponent(query)}`
+        );
+        if (!cancelled) {
+          setTargetScorerOptions(
+            (Array.isArray(result.data) ? result.data : []).filter(
+              (target) => idOf(target).toLowerCase() !== idOf(user.id).toLowerCase()
+            )
+          );
+          setTargetScorerSearchError("");
+        }
+      } catch (searchError) {
+        if (!cancelled) {
+          setTargetScorerOptions([]);
+          setTargetScorerSearchError(searchError.message || "Unable to search users.");
+        }
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
+    };
+  }, [targetScorerSearch, user?.id]);
 
   const teamById = useMemo(
     () => Object.fromEntries(teams.map((team) => [idOf(team).toLowerCase(), team])),
@@ -1114,9 +1223,22 @@ export default function ScoringSetup() {
       !innings.strikerId ||
       !innings.nonStrikerId ||
       !innings.currentBowlerId);
+  const isMatchOwner =
+    Boolean(user?.id && match?.scoringAccess?.ownerId) &&
+    idOf(match.scoringAccess.ownerId).toLowerCase() ===
+      idOf(user.id).toLowerCase();
+  const isActiveScorer =
+    Boolean(user?.id && match?.scoringAccess?.activeScorerId) &&
+    idOf(match.scoringAccess.activeScorerId).toLowerCase() ===
+      idOf(user.id).toLowerCase();
+  const canManageScoring =
+    isActiveScorer &&
+    permissionFresh &&
+    match?.status !== "completed" &&
+    match?.status !== "cancelled";
   const canScore =
     (innings?.status === "READY" || innings?.status === "IN_PROGRESS") &&
-    match?.status !== "completed";
+    canManageScoring;
   const padDisabled = saving || !canScore || Boolean(needsPlayerSetup);
   const finalizedMatch =
     match?.status === "completed" && hasValidMatchResult(match);
@@ -1130,6 +1252,54 @@ export default function ScoringSetup() {
     ["T10", "T20", "ODI", "CUSTOM"].includes(match?.format) &&
     Number.isInteger(match?.overs) &&
     match.overs > 0;
+
+  async function changeScoringAccess(action) {
+    setError("");
+    setSuccess("");
+    const target = targetScorerId.trim();
+    if (action === "transfer" && !target) {
+      setError("Enter the registered user's ID.");
+      return;
+    }
+    if (
+      !window.confirm(
+        action === "transfer"
+          ? "Transfer scoring access to this registered user?"
+          : "Reclaim scoring access immediately?"
+      )
+    ) {
+      return;
+    }
+
+    setChangingAccess(true);
+    try {
+      const result = await apiRequest(
+        `${MATCH_API_URL}/${matchId}/scoring-access/${action}`,
+        {
+          method: "POST",
+          ...(action === "transfer"
+            ? { body: JSON.stringify({ targetUserId: target }) }
+            : {}),
+        }
+      );
+      if (!result.data?.activeScorerId || !Number.isInteger(result.data.version)) {
+        throw new Error("Match Service returned invalid scoring access.");
+      }
+      setTargetScorerId("");
+      setTargetScorerSearch("");
+      setTargetScorerOptions([]);
+      setSuccess(
+        action === "transfer"
+          ? "Scoring access transferred."
+          : "Scoring access reclaimed."
+      );
+      setReloadKey((key) => key + 1);
+    } catch (accessError) {
+      setError(accessError.message || "Unable to update scoring access.");
+    } finally {
+      setChangingAccess(false);
+    }
+  }
 
   const activeBatters = [
     { role: "Striker", player: striker, id: idOf(innings?.strikerId) },
@@ -1175,6 +1345,9 @@ export default function ScoringSetup() {
       setSuccess("Player selections saved.");
     } catch (saveError) {
       setError(saveError.message || "Unable to save player selections.");
+      if (saveError.message?.includes("active scorer")) {
+        setReloadKey((key) => key + 1);
+      }
     } finally {
       setSaving(false);
     }
@@ -1202,6 +1375,9 @@ export default function ScoringSetup() {
       setReloadKey((key) => key + 1);
     } catch (startError) {
       setError(startError.message || "Unable to start the second innings.");
+      if (startError.message?.includes("active scorer")) {
+        setReloadKey((key) => key + 1);
+      }
     } finally {
       setStartingSecondInnings(false);
     }
@@ -1238,6 +1414,9 @@ export default function ScoringSetup() {
       }
     } catch (saveError) {
       setError(saveError.message || "Unable to record delivery.");
+      if (saveError.message?.includes("active scorer")) {
+        setReloadKey((key) => key + 1);
+      }
     } finally {
       setSaving(false);
     }
@@ -1335,6 +1514,13 @@ export default function ScoringSetup() {
         : finalResult?.outcome === "NO_RESULT"
           ? "No result"
           : "";
+  const userLabel = (playerId) => {
+    if (!playerId) return "Unassigned";
+    if (user?.id && idOf(playerId).toLowerCase() === idOf(user.id).toLowerCase()) {
+      return `${user.name || "You"} (you)`;
+    }
+    return `User ${idOf(playerId).slice(0, 8)}`;
+  };
 
   function renderInningsScorecard(item) {
     const itemBattingTeam = teamById[idOf(item.battingTeamId).toLowerCase()];
@@ -1757,6 +1943,137 @@ export default function ScoringSetup() {
           </div>
         </header>
 
+        {match && (
+          <section className="mx-3 mt-3 rounded-xl border px-4 py-3" style={panelStyle}>
+            <div className="flex flex-wrap items-start gap-4">
+              <div className="min-w-[220px] flex-1">
+                <h2 className="font-bold">Scoring access</h2>
+                <p className="mt-1 text-sm text-zinc-300">
+                  Owner: {userLabel(match.scoringAccess?.ownerId)}
+                  <span className="mx-2 text-zinc-600">·</span>
+                  Active scorer: {userLabel(match.scoringAccess?.activeScorerId)}
+                </p>
+                <p className="mt-1 text-xs text-zinc-400">
+                  {permissionRefreshError
+                    ? `${permissionRefreshError} Scoring controls are disabled until permission is confirmed.`
+                    : !user
+                    ? "You are viewing this match. Sign in as the active scorer to update the score."
+                    : isActiveScorer
+                      ? "You are the active scorer and may update this score."
+                      : isMatchOwner
+                        ? "You own this match but are not the active scorer. You may reclaim scoring."
+                        : "You are viewing this match. Only the active scorer can update the score."}
+                </p>
+              </div>
+              {(isMatchOwner || isActiveScorer) &&
+                match.status !== "completed" &&
+                match.status !== "cancelled" && (
+                  <div className="flex flex-wrap items-end gap-2">
+                    <label className="min-w-56 text-xs text-zinc-400">
+                      Find registered user
+                      <input
+                        value={targetScorerSearch}
+                        onChange={(event) => {
+                          setTargetScorerSearch(event.target.value);
+                          setTargetScorerId("");
+                        }}
+                        placeholder="Search by name"
+                        className="mt-1 w-full rounded-lg border bg-black/20 px-3 py-2 text-sm text-white"
+                        style={{ borderColor: C.innerBorder }}
+                        disabled={changingAccess}
+                      />
+                      {targetScorerSearch.trim().length >= 2 && (
+                        <select
+                          value={targetScorerId}
+                          onChange={(event) => setTargetScorerId(event.target.value)}
+                          className="mt-2 w-full rounded-lg border bg-black/20 px-3 py-2 text-sm text-white"
+                          style={{ borderColor: C.innerBorder }}
+                          disabled={changingAccess}
+                        >
+                          <option value="">
+                            {targetScorerOptions.length
+                              ? "Select a user"
+                              : "No matching active users"}
+                          </option>
+                          {targetScorerOptions.map((target) => (
+                            <option key={target.id} value={target.id}>
+                              {target.name} · {target.id.slice(-6)}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {targetScorerSearchError && (
+                        <span className="mt-1 block text-xs text-red-300">
+                          {targetScorerSearchError}
+                        </span>
+                      )}
+                    </label>
+                    <button
+                      type="button"
+                      className={`${primaryButtonClass} px-4 py-2.5`}
+                      style={primaryButtonStyle}
+                      disabled={changingAccess}
+                      onClick={() => void changeScoringAccess("transfer")}
+                    >
+                      Transfer scoring
+                    </button>
+                    {isMatchOwner && !isActiveScorer && (
+                      <button
+                        type="button"
+                        className={`${secondaryButtonClass} py-2.5`}
+                        style={secondaryButtonStyle}
+                        disabled={changingAccess}
+                        onClick={() => void changeScoringAccess("reclaim")}
+                      >
+                        Reclaim scoring
+                      </button>
+                    )}
+                  </div>
+                )}
+            </div>
+          </section>
+        )}
+
+        {match && (
+          <details className="mx-3 mt-2 rounded-xl border px-4 py-3" style={panelStyle}>
+            <summary className="cursor-pointer font-semibold">Match squads</summary>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {[
+                {
+                  team: teamById[idOf(match.teamAId).toLowerCase()],
+                  playerIds: match.teamAPlayerIds || [],
+                },
+                {
+                  team: teamById[idOf(match.teamBId).toLowerCase()],
+                  playerIds: match.teamBPlayerIds || [],
+                },
+              ].map(({ team, playerIds }, index) => (
+                <div key={idOf(team) || index} className="rounded-lg border p-3" style={innerStyle}>
+                  <h3 className="font-semibold">{team?.name || `Team ${index + 1}`}</h3>
+                  <ul className="mt-2 flex flex-wrap gap-2 text-sm text-zinc-300">
+                    {playerIds.map((playerId) => {
+                      const playerKey = idOf(playerId);
+                      return (
+                        <li
+                          key={playerKey}
+                          className="rounded-md bg-white/5 px-2 py-1"
+                        >
+                          {playersById[playerKey]
+                            ? getPlayerName(playersById[playerKey])
+                            : `Player ${playerKey.slice(-6)}`}
+                        </li>
+                      );
+                    })}
+                    {playerIds.length === 0 && (
+                      <li className="text-zinc-500">Squad not available</li>
+                    )}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+
         {!innings ? (
           <div className="mx-auto w-full max-w-3xl space-y-4 px-4 py-7">
             {error && (
@@ -1769,10 +2086,20 @@ export default function ScoringSetup() {
               </div>
             )}
             <section className={`${panelClass} p-4`} style={panelStyle}>
-              <h2 className="font-bold">Scorecard unavailable</h2>
+              <h2 className="font-bold">
+                {match?.status === "scheduled" ? "Match has not started" : "Scorecard unavailable"}
+              </h2>
               <p className="mt-2 text-sm text-zinc-400">
-                {error || "No innings is available for this match."}
+                {error ||
+                  (match?.status === "scheduled"
+                    ? "The scorecard will appear after the first innings is initialized."
+                    : "No innings is available for this match.")}
               </p>
+              {teams.length === 2 && (
+                <p className="mt-3 text-sm text-zinc-300">
+                  {teams[0].name} vs {teams[1].name}
+                </p>
+              )}
             </section>
           </div>
         ) : resultPending ? (
@@ -2002,6 +2329,7 @@ export default function ScoringSetup() {
             </div>
 
             {/* Scoring area */}
+            {canManageScoring ? (
             <section
               className={`${panelClass} flex flex-1 flex-col gap-3 px-6 py-4`}
               style={{ ...panelStyle, minHeight: 380 }}
@@ -2174,6 +2502,15 @@ export default function ScoringSetup() {
                 </div>
               )}
             </section>
+            ) : (
+              <section className={`${panelClass} p-5`} style={panelStyle}>
+                <p className="text-sm text-zinc-300">
+                  {match?.status === "completed" || match?.status === "cancelled"
+                    ? "This match is no longer accepting scoring changes."
+                    : "You are viewing this match. Only the active scorer can update the score."}
+                </p>
+              </section>
+            )}
           </div>
         )}
       </div>

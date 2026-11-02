@@ -77,6 +77,48 @@ async function getSavedMatch(matchId) {
   return result.data;
 }
 
+async function revalidateScoringAuthorization(matchId, authorization) {
+  if (
+    !authorization?.cookie ||
+    authorization.matchId !== String(matchId) ||
+    !Number.isInteger(authorization.version)
+  ) {
+    throw new ScoringServiceError("Scoring permission is unavailable.", 403);
+  }
+
+  let response;
+  try {
+    response = await fetch(
+      `${env.MATCH_SERVICE_URL.replace(/\/+$/, "")}/api/v1/matches/${matchId}/scoring-access/authorize`,
+      {
+        headers: {
+          Cookie: authorization.cookie,
+          Accept: "application/json",
+        },
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+  } catch {
+    throw new ScoringServiceError(
+      "Match Service is unavailable; scoring permission could not be revalidated.",
+      503
+    );
+  }
+  const body = await response.json().catch(() => null);
+  if (response.status === 401 || response.status === 403) {
+    throw new ScoringServiceError("Only the active scorer can update this match.", 403);
+  }
+  if (!response.ok || body?.success !== true || !Number.isInteger(body.data?.version)) {
+    throw new ScoringServiceError("Scoring permission could not be revalidated.", 503);
+  }
+  if (body.data.version !== authorization.version) {
+    throw new ScoringServiceError(
+      "Scoring access changed during this operation. Reload and retry.",
+      409
+    );
+  }
+}
+
 async function finalizeMatchInService(matchId) {
   let response;
 
@@ -85,7 +127,10 @@ async function finalizeMatchInService(matchId) {
       `${env.MATCH_SERVICE_URL.replace(/\/+$/, "")}/api/v1/matches/${matchId}/finalize`,
       {
         method: "POST",
-        headers: { Accept: "application/json" },
+        headers: {
+          Accept: "application/json",
+          "X-Internal-Service-Secret": env.INTERNAL_SERVICE_SECRET || "",
+        },
         signal: AbortSignal.timeout(5000),
       }
     );
@@ -374,7 +419,7 @@ function deriveInitialInnings(match, matchId) {
   return parsed.data;
 }
 
-export async function initializeFirstInnings(id) {
+export async function initializeFirstInnings(id, authorization) {
   const matchId = parseId(matchIdSchema, id, "Invalid match ID.");
   const existing = await Innings.findOne({ matchId, inningsNumber: 1 }).lean();
 
@@ -402,6 +447,7 @@ export async function initializeFirstInnings(id) {
     version: 0,
   };
 
+  await revalidateScoringAuthorization(matchId, authorization);
   try {
     const innings = await Innings.findOneAndUpdate(
       { matchId, inningsNumber: 1 },
@@ -425,7 +471,7 @@ export async function initializeFirstInnings(id) {
   }
 }
 
-export async function initializeSecondInnings(id) {
+export async function initializeSecondInnings(id, authorization) {
   const matchId = parseId(matchIdSchema, id, "Invalid match ID.");
   const existing = await Innings.findOne({ matchId, inningsNumber: 2 }).lean();
 
@@ -526,6 +572,7 @@ export async function initializeSecondInnings(id) {
     version: 0,
   };
 
+  await revalidateScoringAuthorization(matchId, authorization);
   try {
     const result = await Innings.findOneAndUpdate(
       { matchId, inningsNumber: 2 },
@@ -561,7 +608,7 @@ export async function initializeSecondInnings(id) {
   }
 }
 
-export async function setInningsPlayers(id, payload) {
+export async function setInningsPlayers(id, payload, authorization) {
   const inningsId = parseId(inningsIdSchema, id, "Invalid innings ID.");
   const parsed = inningsPlayersSchema.safeParse(payload);
 
@@ -632,6 +679,7 @@ export async function setInningsPlayers(id, payload) {
     throw new ScoringServiceError("Select the bowler only between overs.", 409);
   }
 
+  await revalidateScoringAuthorization(innings.matchId.toString(), authorization);
   const updated = await Innings.findOneAndUpdate(
     { _id: inningsId, version: innings.version, status: innings.status },
     {
@@ -727,7 +775,7 @@ function validateFieldingAttribution(event, bowlingSquad) {
   }
 }
 
-export async function recordDelivery(id, payload) {
+export async function recordDelivery(id, payload, authorization, userId) {
   const inningsId = parseId(inningsIdSchema, id, "Invalid innings ID.");
   const parsed = deliveryEventSchema.safeParse(payload);
 
@@ -826,6 +874,7 @@ export async function recordDelivery(id, payload) {
       const delivery = {
         matchId: innings.matchId,
         inningsId,
+        createdBy: userId,
         sequence,
         strikerId: innings.strikerId,
         nonStrikerId: innings.nonStrikerId,
@@ -845,6 +894,7 @@ export async function recordDelivery(id, payload) {
         beforeState: result.beforeState,
       };
 
+      await revalidateScoringAuthorization(innings.matchId.toString(), authorization);
       const [savedDelivery] = await Delivery.create([delivery], { session });
       const nextState = { ...result.state };
       delete nextState.version;
@@ -875,10 +925,12 @@ export async function recordDelivery(id, payload) {
         );
       }
 
+      const latestDeliveryView = savedDelivery.toObject();
+      delete latestDeliveryView.createdBy;
       scorecard = {
         ...updatedInnings,
         overs: deriveOvers(updatedInnings.legalBalls),
-        latestDelivery: savedDelivery.toObject(),
+        latestDelivery: latestDeliveryView,
       };
     });
   } catch (error) {
@@ -962,6 +1014,7 @@ export async function getDeliveryHistory(matchId, inningsId) {
     matchId: parsedMatchId,
     inningsId: parsedInningsId,
   })
+    .select("-createdBy")
     .sort({ sequence: 1 })
     .lean();
 }

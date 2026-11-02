@@ -8,6 +8,12 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   TEAM_SERVICE_URL: z.string().url().default("http://localhost:4004"),
   SCORING_SERVICE_URL: z.string().url().default("http://localhost:4005"),
+  AUTH_SERVICE_URL: z.string().url().default("http://localhost:4001"),
+  INTERNAL_SERVICE_SECRET: z
+    .string()
+    .min(32)
+    .refine((value) => /\S/.test(value), "INTERNAL_SERVICE_SECRET cannot be blank.")
+    .optional(),
 });
 
 const result = envSchema.safeParse(process.env);

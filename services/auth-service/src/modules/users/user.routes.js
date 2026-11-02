@@ -13,8 +13,10 @@ import {
   forgotPasswordHandler,
   resetPasswordHandler,
   verifyPhoneForPasswordResetHandler,
-resetPasswordWithPhoneHandler,
-updateCurrentUserProfileHandler
+  resetPasswordWithPhoneHandler,
+  updateCurrentUserProfileHandler,
+  getScoringTransferTargetHandler,
+  searchScoringTransferTargetsHandler,
 } from "./user.controller.js";
 
 import { requireAuth } from "../../middleware/require-auth.js";
@@ -38,6 +40,8 @@ router.post("/google", googleSignInHandler);
 
 // Authenticated session
 router.get("/me", requireAuth, getCurrentUserHandler);
+router.get("/scoring-transfer-targets", requireAuth, searchScoringTransferTargetsHandler);
+router.get("/scoring-transfer-targets/:userId", requireAuth, getScoringTransferTargetHandler);
 
 // Logout
 router.post("/logout", logoutHandler);

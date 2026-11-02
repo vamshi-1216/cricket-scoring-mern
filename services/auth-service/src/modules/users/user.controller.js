@@ -42,6 +42,8 @@ import { updateProfileSchema } from "./profile.validation.js";
 import { createAccessToken } from "../../utils/jwt.js";
 import { env } from "../../config/env.js";
 import { authenticateWithPassword, LoginError } from "./login.service.js";
+import mongoose from "mongoose";
+import { User } from "./user.model.js";
 
 // Register a new user
 export async function register(req, res, next) {
@@ -174,6 +176,70 @@ export function getCurrentUserHandler(req, res) {
     success: true,
     data: { user: req.user },
   });
+}
+
+export async function getScoringTransferTargetHandler(req, res, next) {
+  if (!/^[a-f\d]{24}$/i.test(req.params.userId)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid user ID.",
+    });
+  }
+
+  try {
+    const user = await User.findOne({
+      _id: req.params.userId,
+      status: "active",
+    })
+      .select("_id name")
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "Active registered user not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: { id: user._id.toString(), name: user.name },
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+export async function searchScoringTransferTargetsHandler(req, res, next) {
+  const query = typeof req.query.query === "string" ? req.query.query.trim() : "";
+  if (query.length < 2 || query.length > 100) {
+    return res.status(400).json({
+      success: false,
+      message: "Search text must be between 2 and 100 characters.",
+    });
+  }
+
+  try {
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const users = await User.find({
+      status: "active",
+      name: { $regex: escapedQuery, $options: "i" },
+    })
+      .select("_id name")
+      .sort({ name: 1 })
+      .limit(10)
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      data: users.map((user) => ({
+        id: user._id.toString(),
+        name: user.name,
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
 }
 
 export async function updateCurrentUserProfileHandler(req, res, next) {

@@ -3,7 +3,10 @@ import { calculateAwardsForMatch } from "../awards/awards.service.js";
 
 export async function initializeInnings(req, res, next) {
   try {
-    const result = await inningsService.initializeFirstInnings(req.params.matchId);
+    const result = await inningsService.initializeFirstInnings(
+      req.params.matchId,
+      req.scoringAuthorization
+    );
 
     res.status(result.created ? 201 : 200).json({
       success: true,
@@ -19,7 +22,10 @@ export async function initializeInnings(req, res, next) {
 
 export async function initializeSecondInnings(req, res, next) {
   try {
-    const result = await inningsService.initializeSecondInnings(req.params.matchId);
+    const result = await inningsService.initializeSecondInnings(
+      req.params.matchId,
+      req.scoringAuthorization
+    );
 
     res.status(result.created ? 201 : 200).json({
       success: true,

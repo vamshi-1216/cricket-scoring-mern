@@ -202,9 +202,7 @@ function AppContent() {
 
         <Route
           path="/matches/:matchId/scoring"
-          element={
-            user ? <ScoringSetup /> : <Navigate to="/login" replace />
-          }
+          element={<ScoringSetup user={user} />}
         />
 
         <Route

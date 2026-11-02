@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { env } from "./env.js";
+import { ScoringOperation } from "../modules/scoring-operations/scoring-operation.model.js";
 
 export async function connectDatabase() {
   mongoose.set("strictQuery", true);
@@ -7,6 +8,7 @@ export async function connectDatabase() {
   await mongoose.connect(env.MONGODB_URI, {
     serverSelectionTimeoutMS: 5000,
   });
+  await ScoringOperation.createIndexes();
 
   console.log("Scoring Service connected to MongoDB");
 }

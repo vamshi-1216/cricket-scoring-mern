@@ -17,6 +17,52 @@ const resultMarginSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const scoringAccessSchema = new mongoose.Schema(
+  {
+    ownerId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    activeScorerId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    version: { type: Number, min: 1, validate: Number.isInteger, default: 1 },
+    transferredAt: { type: Date, default: null },
+    permitGate: {
+      type: String,
+      enum: ["OPEN", "DRAINING", "CLOSED"],
+      default: "OPEN",
+    },
+    activePermitCount: {
+      type: Number,
+      min: 0,
+      validate: Number.isInteger,
+      default: 0,
+    },
+    pendingChange: {
+      type: new mongoose.Schema(
+        {
+          changeId: { type: String, required: true },
+          action: { type: String, enum: ["TRANSFER", "RECLAIM"], required: true },
+          fromUserId: { type: mongoose.Schema.Types.ObjectId, required: true },
+          toUserId: { type: mongoose.Schema.Types.ObjectId, required: true },
+          requestedBy: { type: mongoose.Schema.Types.ObjectId, required: true },
+          requestedAt: { type: Date, required: true },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const scoringTransferHistorySchema = new mongoose.Schema(
+  {
+    fromUserId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    toUserId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    transferredBy: { type: mongoose.Schema.Types.ObjectId, required: true },
+    transferredAt: { type: Date, required: true },
+    action: { type: String, enum: ["TRANSFER", "RECLAIM"], required: true },
+  },
+  { _id: false }
+);
+
 const manOfTheMatchBreakdownSchema = new mongoose.Schema(
   {
     battingPoints: { type: Number, validate: Number.isFinite, required: true },
@@ -267,6 +313,15 @@ const matchSchema = new mongoose.Schema(
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       default: null,
+    },
+    scoringAccess: {
+      type: scoringAccessSchema,
+      default: undefined,
+    },
+    scoringTransferHistory: {
+      type: [scoringTransferHistorySchema],
+      default: [],
+      select: false,
     },
   },
   {

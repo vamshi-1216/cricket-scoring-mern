@@ -61,6 +61,7 @@ const deliverySchema = new mongoose.Schema(
     strikerId: { type: mongoose.Schema.Types.ObjectId, required: true },
     nonStrikerId: { type: mongoose.Schema.Types.ObjectId, required: true },
     bowlerId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, default: null },
     eventType: { type: String, required: true, trim: true, maxlength: 30 },
     batRuns: { type: Number, min: 0, validate: Number.isInteger, default: 0 },
     extras: { type: extrasSchema, default: () => ({}) },
