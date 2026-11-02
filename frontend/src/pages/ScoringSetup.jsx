@@ -114,10 +114,36 @@ async function apiRequest(url, options = {}) {
 
   const result = await response.json().catch(() => ({}));
   if (!response.ok || result.success === false) {
-    throw new Error(result.message || `Request failed with status ${response.status}.`);
+    const error = new Error(
+      result.message || `Request failed with status ${response.status}.`
+    );
+    error.status = response.status;
+    error.code = result.code;
+    throw error;
   }
 
   return result;
+}
+
+function createDeliveryIdempotencyKey() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  if (typeof globalThis.crypto?.getRandomValues !== "function") {
+    throw new Error("Secure request IDs are unavailable in this browser.");
+  }
+
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0"));
+  return [
+    hex.slice(0, 4).join(""),
+    hex.slice(4, 6).join(""),
+    hex.slice(6, 8).join(""),
+    hex.slice(8, 10).join(""),
+    hex.slice(10, 16).join(""),
+  ].join("-");
 }
 
 function idOf(value) {
@@ -879,6 +905,16 @@ function WicketPanel({
 
 export default function ScoringSetup({ user }) {
   const { matchId } = useParams();
+  const pendingDeliveryRequestRef = useRef(null);
+
+  function clearPendingDeliveryRequest(storageKey) {
+    pendingDeliveryRequestRef.current = null;
+    try {
+      sessionStorage.removeItem(storageKey);
+    } catch (storageError) {
+      console.error("Unable to clear the completed delivery request key:", storageError);
+    }
+  }
   const [innings, setInnings] = useState(null);
   const [allInnings, setAllInnings] = useState([]);
   const [match, setMatch] = useState(null);
@@ -1387,14 +1423,51 @@ export default function ScoringSetup({ user }) {
     setError("");
     setSuccess("");
     setSaving(true);
+    const requestFingerprint = JSON.stringify(payload);
+    const storageKey = `cricket-scoring:pending-delivery:${matchId}:${innings._id}`;
+    let pendingRequest;
+    try {
+      pendingRequest =
+        pendingDeliveryRequestRef.current?.storageKey === storageKey
+          ? pendingDeliveryRequestRef.current
+          : JSON.parse(sessionStorage.getItem(storageKey) || "null");
+      if (
+        pendingRequest &&
+        pendingRequest.fingerprint !== requestFingerprint
+      ) {
+        throw new Error(
+          "Retry or resolve the pending delivery before submitting a different one."
+        );
+      }
+      if (!pendingRequest) {
+        pendingRequest = {
+          storageKey,
+          fingerprint: requestFingerprint,
+          key: createDeliveryIdempotencyKey(),
+        };
+      } else {
+        pendingRequest.storageKey = storageKey;
+      }
+      if (!sessionStorage.getItem(storageKey)) {
+        sessionStorage.setItem(storageKey, JSON.stringify(pendingRequest));
+      }
+      pendingDeliveryRequestRef.current = pendingRequest;
+    } catch (requestError) {
+      setError(requestError.message || "Unable to prepare a safe delivery request.");
+      setSaving(false);
+      return;
+    }
+
     try {
       const result = await apiRequest(
         `${SCORING_API_URL}/api/v1/innings/${innings._id}/deliveries`,
         {
           method: "POST",
+          headers: { "Idempotency-Key": pendingRequest.key },
           body: JSON.stringify(payload),
         }
       );
+      clearPendingDeliveryRequest(storageKey);
       setInnings(result.data);
       setSelection({
         strikerId: idOf(result.data.strikerId),
@@ -1413,6 +1486,9 @@ export default function ScoringSetup({ user }) {
         setError("Delivery was recorded, but delivery history could not be refreshed.");
       }
     } catch (saveError) {
+      if (saveError.code === "DELIVERY_OPERATION_ABORTED") {
+        clearPendingDeliveryRequest(storageKey);
+      }
       setError(saveError.message || "Unable to record delivery.");
       if (saveError.message?.includes("active scorer")) {
         setReloadKey((key) => key + 1);

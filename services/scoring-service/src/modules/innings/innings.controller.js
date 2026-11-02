@@ -37,7 +37,8 @@ export async function recordDelivery(req, res, next) {
       req.params.inningsId,
       req.body,
       req.scoringAuthorization,
-      req.user.id
+      req.user.id,
+      req.get("Idempotency-Key")
     );
 
     res.status(201).json({

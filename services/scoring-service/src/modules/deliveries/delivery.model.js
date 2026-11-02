@@ -62,6 +62,7 @@ const deliverySchema = new mongoose.Schema(
     nonStrikerId: { type: mongoose.Schema.Types.ObjectId, required: true },
     bowlerId: { type: mongoose.Schema.Types.ObjectId, required: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, default: null },
+    operationId: { type: String },
     eventType: { type: String, required: true, trim: true, maxlength: 30 },
     batRuns: { type: Number, min: 0, validate: Number.isInteger, default: 0 },
     extras: { type: extrasSchema, default: () => ({}) },
@@ -87,5 +88,9 @@ const deliverySchema = new mongoose.Schema(
 );
 
 deliverySchema.index({ inningsId: 1, sequence: 1 }, { unique: true });
+deliverySchema.index(
+  { operationId: 1 },
+  { unique: true, sparse: true, name: "operation_unique" }
+);
 
 export const Delivery = mongoose.model("Delivery", deliverySchema);

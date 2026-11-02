@@ -14,7 +14,7 @@ app.use(
     origin: env.FRONTEND_ORIGIN,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
   })
 );
 
@@ -74,6 +74,7 @@ app.use((error, req, res, next) => {
 
   return res.status(statusCode).json({
     success: false,
+    ...(typeof error.code === "string" ? { code: error.code } : {}),
     message: statusCode >= 500 ? "Internal server error." : error.message,
   });
 });

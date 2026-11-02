@@ -55,6 +55,12 @@ function validateCreateInput(input) {
   if (typeof input.permitId !== "string" || !uuidSchema.test(input.permitId)) {
     throw new ScoringOperationError("Invalid permit ID.", 400);
   }
+  if (
+    typeof input.requestFingerprint !== "string" ||
+    !/^[a-f\d]{64}$/i.test(input.requestFingerprint)
+  ) {
+    throw new ScoringOperationError("Invalid request fingerprint.", 400);
+  }
 }
 
 function sameOperationIdentity(operation, input) {
@@ -63,7 +69,8 @@ function sameOperationIdentity(operation, input) {
     String(operation.inningsId) === String(input.inningsId) &&
     String(operation.scorerId) === String(input.scorerId) &&
     operation.permissionVersion === input.permissionVersion &&
-    operation.permitId === input.permitId
+    operation.permitId === input.permitId &&
+    operation.requestFingerprint === input.requestFingerprint
   );
 }
 
@@ -129,15 +136,47 @@ export async function getScoringOperation(operationId) {
   return operation;
 }
 
-export async function transitionScoringOperation(operationId, nextStatus) {
+export async function getScoringOperationByRequest(matchId, requestId) {
+  if (!isObjectId(matchId)) {
+    throw new ScoringOperationError("Invalid match ID.", 400);
+  }
+  if (
+    typeof requestId !== "string" ||
+    requestId.length < 1 ||
+    requestId.length > 128 ||
+    !/\S/.test(requestId)
+  ) {
+    throw new ScoringOperationError("A valid request ID is required.", 400);
+  }
+  return ScoringOperation.findOne({
+    matchId: new mongoose.Types.ObjectId(matchId),
+    requestId,
+  }).lean();
+}
+
+export async function transitionScoringOperation(
+  operationId,
+  nextStatus,
+  { session, outcome, responseSnapshot } = {}
+) {
   validateOperationId(operationId);
   if (!operationStates.includes(nextStatus)) {
     throw new ScoringOperationError("Invalid scoring operation state.", 400);
   }
 
-  const current = await ScoringOperation.findOne({ operationId }).lean();
+  const currentQuery = ScoringOperation.findOne({ operationId });
+  if (session) currentQuery.session(session);
+  const current = await currentQuery.lean();
   if (!current) throw new ScoringOperationError("Scoring operation not found.", 404);
-  if (current.status === nextStatus) return current;
+  if (current.status === nextStatus) {
+    if (outcome && current.outcome !== outcome) {
+      throw new ScoringOperationError(
+        "Scoring operation outcome cannot be changed.",
+        409
+      );
+    }
+    return current;
+  }
 
   if (!allowedTransitions[current.status]?.includes(nextStatus)) {
     throw new ScoringOperationError(
@@ -145,23 +184,81 @@ export async function transitionScoringOperation(operationId, nextStatus) {
       409
     );
   }
+  if (
+    (nextStatus === "RELEASE_PENDING" || nextStatus === "RELEASED") &&
+    outcome !== current.outcome
+  ) {
+    throw new ScoringOperationError(
+      "Scoring operation outcome cannot be changed.",
+      409
+    );
+  }
+  if (
+    (nextStatus === "COMMITTED" || nextStatus === "ABORTED") &&
+    outcome &&
+    outcome !== nextStatus
+  ) {
+    throw new ScoringOperationError(
+      "Scoring operation outcome cannot be changed.",
+      409
+    );
+  }
+  if (
+    nextStatus === "COMMITTED" &&
+    (!responseSnapshot || typeof responseSnapshot !== "object")
+  ) {
+    throw new ScoringOperationError(
+      "A committed scoring operation requires its response snapshot.",
+      400
+    );
+  }
 
   const update = { status: nextStatus };
   if (nextStatus === "COMMITTED" || nextStatus === "ABORTED") {
     update.resolvedAt = new Date();
+    update.outcome = nextStatus;
+  }
+  if (nextStatus === "RELEASE_PENDING") {
+    update.outcome = outcome;
+  }
+  if (nextStatus === "COMMITTED" && responseSnapshot) {
+    update.responseSnapshot = responseSnapshot;
   }
 
-  const transitioned = await ScoringOperation.findOneAndUpdate(
+  const transitionQuery = ScoringOperation.findOneAndUpdate(
     { operationId, status: current.status },
     { $set: update },
-    { new: true, runValidators: true }
-  ).lean();
+    { new: true, runValidators: true, session }
+  );
+  const transitioned = await transitionQuery.lean();
   if (transitioned) return transitioned;
 
-  const latest = await ScoringOperation.findOne({ operationId }).lean();
+  const latestQuery = ScoringOperation.findOne({ operationId });
+  if (session) latestQuery.session(session);
+  const latest = await latestQuery.lean();
   if (latest?.status === nextStatus) return latest;
   throw new ScoringOperationError(
     "Scoring operation changed concurrently; reload before retrying.",
     409
   );
+}
+
+export async function updateScoringOperationResponse(operationId, responseSnapshot) {
+  validateOperationId(operationId);
+  const updated = await ScoringOperation.findOneAndUpdate(
+    {
+      operationId,
+      status: { $in: ["COMMITTED", "RELEASE_PENDING", "RELEASED"] },
+      outcome: "COMMITTED",
+    },
+    { $set: { responseSnapshot } },
+    { new: true, runValidators: true }
+  ).lean();
+  if (!updated) {
+    throw new ScoringOperationError(
+      "Committed scoring operation was not found for response update.",
+      409
+    );
+  }
+  return updated;
 }

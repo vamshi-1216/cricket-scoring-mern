@@ -158,7 +158,10 @@ export async function acquireScoringPermit(req, res, next) {
     );
     res.status(result.created ? 201 : 200).json({
       success: true,
-      data: result.permit,
+      data: {
+        ...result.permit,
+        created: result.created,
+      },
     });
   } catch (error) {
     next(error);

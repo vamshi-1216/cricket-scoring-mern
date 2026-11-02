@@ -1,8 +1,16 @@
 import mongoose from "mongoose";
+import { createHash } from "node:crypto";
 import { env } from "../../config/env.js";
 import { Delivery } from "../deliveries/delivery.model.js";
 import { calculateDelivery } from "../scoring/scoring.engine.js";
 import { deriveOvers, normalizeScoringEvent } from "../scoring/scoring.rules.js";
+import {
+  getScoringOperationByRequest,
+  transitionScoringOperation,
+  createScoringOperation,
+  updateScoringOperationResponse,
+  ScoringOperationError,
+} from "../scoring-operations/scoring-operation.service.js";
 import { Innings } from "./innings.model.js";
 import {
   deliveryEventSchema,
@@ -13,11 +21,292 @@ import {
 } from "./innings.validation.js";
 
 export class ScoringServiceError extends Error {
-  constructor(message, statusCode = 400) {
+  constructor(message, statusCode = 400, code) {
     super(message);
     this.name = "ScoringServiceError";
     this.statusCode = statusCode;
+    if (code) this.code = code;
   }
+}
+
+function validateIdempotencyKey(requestId) {
+  if (
+    typeof requestId !== "string" ||
+    requestId.length < 1 ||
+    requestId.length > 128 ||
+    !/\S/.test(requestId)
+  ) {
+    throw new ScoringServiceError(
+      "A valid Idempotency-Key header is required.",
+      400
+    );
+  }
+  return requestId;
+}
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableSerialize).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`)
+      .join(",")}}`;
+  }
+  if (typeof value === "string" && /^[a-f\d]{24}$/i.test(value)) {
+    return JSON.stringify(value.toLowerCase());
+  }
+  return JSON.stringify(value);
+}
+
+function deliveryRequestFingerprint(inningsId, event) {
+  return createHash("sha256")
+    .update(stableSerialize({ inningsId: String(inningsId), event }), "utf8")
+    .digest("hex");
+}
+
+function assertOperationRequestIdentity(operation, expected) {
+  if (
+    String(operation.matchId).toLowerCase() !== expected.matchId.toLowerCase() ||
+    String(operation.inningsId).toLowerCase() !== expected.inningsId.toLowerCase() ||
+    String(operation.scorerId).toLowerCase() !== expected.scorerId.toLowerCase() ||
+    operation.requestFingerprint !== expected.requestFingerprint
+  ) {
+    throw new ScoringServiceError(
+      "Idempotency-Key is already associated with a different delivery request.",
+      409
+    );
+  }
+}
+
+function internalServiceHeaders() {
+  if (
+    typeof env.INTERNAL_SERVICE_SECRET !== "string" ||
+    env.INTERNAL_SERVICE_SECRET.length < 32 ||
+    !/\S/.test(env.INTERNAL_SERVICE_SECRET)
+  ) {
+    throw new ScoringServiceError(
+      "Internal service authentication is not configured.",
+      503
+    );
+  }
+  return {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    "X-Internal-Service-Secret": env.INTERNAL_SERVICE_SECRET,
+  };
+}
+
+async function acquireMatchScoringPermit(matchId, scorerId, permissionVersion, requestId) {
+  let response;
+  try {
+    response = await fetch(
+      `${env.MATCH_SERVICE_URL.replace(/\/+$/, "")}/api/v1/matches/${matchId}/scoring-permits`,
+      {
+        method: "POST",
+        headers: internalServiceHeaders(),
+        body: JSON.stringify({ scorerId, permissionVersion, requestId }),
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+  } catch (error) {
+    if (error instanceof ScoringServiceError) throw error;
+    throw new ScoringServiceError(
+      "Match Service is unavailable; a scoring permit could not be acquired.",
+      503
+    );
+  }
+
+  const body = await response.json().catch(() => null);
+  if (
+    !response.ok ||
+    body?.success !== true ||
+    body.data?.state !== "ACTIVE" ||
+    typeof body.data?.created !== "boolean"
+  ) {
+    const error = new ScoringServiceError(
+      body?.message || "Match Service did not issue an active scoring permit.",
+      response.status === 409 ? 409 : response.status >= 500 ? 503 : 403
+    );
+    error.matchServiceConflict = response.status === 409;
+    throw error;
+  }
+  if (
+    body.data.matchId !== matchId ||
+    body.data.scorerId?.toLowerCase() !== scorerId.toLowerCase() ||
+    body.data.permissionVersion !== permissionVersion ||
+    body.data.requestId !== requestId ||
+    typeof body.data.permitId !== "string"
+  ) {
+    throw new ScoringServiceError(
+      "Match Service returned an invalid scoring permit.",
+      502
+    );
+  }
+  return {
+    ...body.data,
+  };
+}
+
+async function releaseMatchScoringPermit(matchId, permitId, state) {
+  let response;
+  try {
+    response = await fetch(
+      `${env.MATCH_SERVICE_URL.replace(/\/+$/, "")}/api/v1/matches/${matchId}/scoring-permits/${permitId}/release`,
+      {
+        method: "POST",
+        headers: internalServiceHeaders(),
+        body: JSON.stringify({ state }),
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+  } catch {
+    throw new ScoringServiceError(
+      "Match Service is unavailable; permit release remains pending.",
+      503
+    );
+  }
+  const body = await response.json().catch(() => null);
+  const expectedPermitState =
+    state === "RELEASED_COMMITTED" ? "RELEASED_COMMITTED" : "RELEASED_ABORTED";
+  if (
+    !response.ok ||
+    body?.success !== true ||
+    body.data?.permitId !== permitId ||
+    body.data?.state !== expectedPermitState
+  ) {
+    throw new ScoringServiceError(
+      body?.message || "Match Service did not confirm scoring permit release.",
+      response.status >= 500 ? 503 : 409
+    );
+  }
+}
+
+async function releaseOperationPermit(operation) {
+  if (operation.status === "RELEASED") return false;
+  const outcome = operation.outcome || operation.status;
+  if (!["COMMITTED", "ABORTED"].includes(outcome)) {
+    throw new ScoringServiceError(
+      "Scoring operation outcome is unresolved; its permit cannot be released.",
+      503
+    );
+  }
+
+  try {
+    let current = operation;
+    if (current.status === "COMMITTED" || current.status === "ABORTED") {
+      current = await transitionScoringOperation(
+        current.operationId,
+        "RELEASE_PENDING",
+        { outcome }
+      );
+    }
+    if (current.status !== "RELEASE_PENDING") {
+      throw new ScoringServiceError(
+        "Scoring operation is not ready for permit release.",
+        409
+      );
+    }
+    await releaseMatchScoringPermit(
+      String(current.matchId),
+      current.permitId,
+      outcome === "COMMITTED" ? "RELEASED_COMMITTED" : "RELEASED_ABORTED"
+    );
+    await transitionScoringOperation(current.operationId, "RELEASED", { outcome });
+    return false;
+  } catch (error) {
+    console.error(
+      `Permit release remains pending for scoring operation ${operation.operationId}:`,
+      error.message
+    );
+    return true;
+  }
+}
+
+async function resolveExistingDeliveryOperation(operation, expected) {
+  assertOperationRequestIdentity(operation, expected);
+
+  if (operation.status === "PREPARED") {
+    throw new ScoringServiceError(
+      "This delivery request has an unresolved operation. Retry later; no second delivery was started.",
+      503
+    );
+  }
+  if (!["COMMITTED", "ABORTED", "RELEASE_PENDING", "RELEASED"].includes(operation.status)) {
+    throw new ScoringServiceError("Scoring operation state is invalid.", 409);
+  }
+
+  const outcome = operation.outcome;
+  if (
+    !["COMMITTED", "ABORTED"].includes(outcome) ||
+    (operation.status === "COMMITTED" && outcome !== "COMMITTED") ||
+    (operation.status === "ABORTED" && outcome !== "ABORTED")
+  ) {
+    throw new ScoringServiceError(
+      "This delivery request has an unresolved outcome. Retry later.",
+      503
+    );
+  }
+
+  const releasePending = await releaseOperationPermit({
+    ...operation,
+    outcome,
+  });
+  if (outcome === "ABORTED") {
+    throw new ScoringServiceError(
+      "The previous delivery operation was aborted. Submit a new delivery request.",
+      409,
+      "DELIVERY_OPERATION_ABORTED"
+    );
+  }
+  if (!operation.responseSnapshot) {
+    throw new ScoringServiceError(
+      "The delivery committed, but its original response is unavailable.",
+      503
+    );
+  }
+
+  const response = { ...operation.responseSnapshot };
+  delete response.permitReleasePending;
+  if (releasePending) response.permitReleasePending = true;
+  return response;
+}
+
+async function findExistingOperationAfterPermitRace(matchId, requestId) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const operation = await getScoringOperationByRequest(matchId, requestId);
+    if (operation) return operation;
+    if (attempt < 4) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+  }
+  return null;
+}
+
+async function releaseUnusedPermit(permit) {
+  if (!permit.created) return;
+  try {
+    await releaseMatchScoringPermit(
+      permit.matchId,
+      permit.permitId,
+      "RELEASED_ABORTED"
+    );
+  } catch (error) {
+    throw new ScoringServiceError(
+      `An unused scoring permit could not be released safely: ${error.message}`,
+      503
+    );
+  }
+}
+
+function journalCreationDefinitelyFailed(error) {
+  return (
+    error instanceof ScoringOperationError ||
+    error?.name === "ValidationError" ||
+    error?.code === 11000 ||
+    error?.code === 121
+  );
 }
 
 function parseId(schema, id, message) {
@@ -775,8 +1064,15 @@ function validateFieldingAttribution(event, bowlingSquad) {
   }
 }
 
-export async function recordDelivery(id, payload, authorization, userId) {
+export async function recordDelivery(
+  id,
+  payload,
+  authorization,
+  userId,
+  idempotencyKey
+) {
   const inningsId = parseId(inningsIdSchema, id, "Invalid innings ID.");
+  const requestId = validateIdempotencyKey(idempotencyKey);
   const parsed = deliveryEventSchema.safeParse(payload);
 
   if (!parsed.success) {
@@ -789,19 +1085,147 @@ export async function recordDelivery(id, payload, authorization, userId) {
   } catch (error) {
     throw new ScoringServiceError(error.message, 400);
   }
+  if (
+    typeof userId !== "string" ||
+    !/^[a-f\d]{24}$/i.test(userId) ||
+    authorization?.matchId == null ||
+    !Number.isInteger(authorization.version)
+  ) {
+    throw new ScoringServiceError("Scoring permission is unavailable.", 403);
+  }
 
   const initialInnings = await Innings.findById(inningsId).lean();
   if (!initialInnings) {
     throw new ScoringServiceError("Innings not found.", 404);
   }
 
-  const match = await getSavedMatch(String(initialInnings.matchId));
+  const matchId = String(initialInnings.matchId);
+  if (authorization.matchId !== matchId) {
+    throw new ScoringServiceError("Scoring permission is unavailable.", 403);
+  }
+  const scorerId = userId.toLowerCase();
+  const requestFingerprint = deliveryRequestFingerprint(inningsId, event);
+  const expectedOperationIdentity = {
+    matchId: matchId.toLowerCase(),
+    inningsId: String(inningsId).toLowerCase(),
+    scorerId,
+    requestFingerprint,
+  };
+
+  const priorOperation = await getScoringOperationByRequest(matchId, requestId);
+  if (priorOperation) {
+    return resolveExistingDeliveryOperation(
+      priorOperation,
+      expectedOperationIdentity
+    );
+  }
+
+  const match = await getSavedMatch(matchId);
   const { battingSquad, bowlingSquad } = getMatchSquads(initialInnings, match);
-  const session = await mongoose.startSession();
+  let permit;
+  try {
+    permit = await acquireMatchScoringPermit(
+      matchId,
+      scorerId,
+      authorization.version,
+      requestId
+    );
+  } catch (error) {
+    if (!error.matchServiceConflict) throw error;
+    const previousOperation = await findExistingOperationAfterPermitRace(
+      matchId,
+      requestId
+    );
+    if (!previousOperation) throw error;
+    return resolveExistingDeliveryOperation(
+      previousOperation,
+      expectedOperationIdentity
+    );
+  }
+
+  if (!permit.created) {
+    const concurrentOperation = await findExistingOperationAfterPermitRace(
+      matchId,
+      requestId
+    );
+    if (!concurrentOperation) {
+      throw new ScoringServiceError(
+        "Another request is preparing this delivery. Retry with the same Idempotency-Key.",
+        503
+      );
+    }
+    return resolveExistingDeliveryOperation(
+      concurrentOperation,
+      expectedOperationIdentity
+    );
+  }
+
+  let operation;
+  let created;
+  try {
+    created = await createScoringOperation({
+      requestId,
+      matchId,
+      inningsId,
+      scorerId,
+      permissionVersion: authorization.version,
+      permitId: permit.permitId,
+      requestFingerprint,
+    });
+  } catch (error) {
+    let concurrentOperation;
+    try {
+      concurrentOperation = await getScoringOperationByRequest(
+        matchId,
+        requestId
+      );
+    } catch {
+      throw new ScoringServiceError(
+        "Journal creation outcome is unresolved. Retry with the same Idempotency-Key.",
+        503
+      );
+    }
+
+    if (concurrentOperation) {
+      if (concurrentOperation.permitId !== permit.permitId) {
+        await releaseUnusedPermit(permit);
+      }
+      return resolveExistingDeliveryOperation(
+        concurrentOperation,
+        expectedOperationIdentity
+      );
+    }
+
+    if (!journalCreationDefinitelyFailed(error)) {
+      throw new ScoringServiceError(
+        "Journal creation outcome is unresolved. Retry with the same Idempotency-Key.",
+        503
+      );
+    }
+
+    await releaseUnusedPermit(permit);
+    throw error;
+  }
+  operation = created.operation;
+  if (!created.created) {
+    if (operation.permitId !== permit.permitId) {
+      await releaseUnusedPermit(permit);
+    }
+    return resolveExistingDeliveryOperation(
+      operation,
+      expectedOperationIdentity
+    );
+  }
+
+  let session;
   let scorecard;
+  let transactionCallbackCompleted = false;
 
   try {
+    session = await mongoose.startSession();
     await session.withTransaction(async () => {
+      transactionCallbackCompleted = false;
+      scorecard = undefined;
       const innings = await Innings.findById(inningsId).session(session).lean();
 
       if (!innings) {
@@ -874,6 +1298,7 @@ export async function recordDelivery(id, payload, authorization, userId) {
       const delivery = {
         matchId: innings.matchId,
         inningsId,
+        operationId: operation.operationId,
         createdBy: userId,
         sequence,
         strikerId: innings.strikerId,
@@ -927,35 +1352,104 @@ export async function recordDelivery(id, payload, authorization, userId) {
 
       const latestDeliveryView = savedDelivery.toObject();
       delete latestDeliveryView.createdBy;
+      delete latestDeliveryView.operationId;
       scorecard = {
         ...updatedInnings,
         overs: deriveOvers(updatedInnings.legalBalls),
         latestDelivery: latestDeliveryView,
       };
+      operation = await transitionScoringOperation(operation.operationId, "COMMITTED", {
+        session,
+        responseSnapshot: scorecard,
+      });
+      transactionCallbackCompleted = true;
     });
   } catch (error) {
-    if (
-      error?.code === 11000 ||
-      error?.hasErrorLabel?.("TransientTransactionError") ||
-      error?.hasErrorLabel?.("WriteConflict")
-    ) {
-      throw new ScoringServiceError(
-        "Another scoring update was recorded concurrently. Reload the scorecard and retry.",
-        409
-      );
-    }
+    const outcomeMayBeUnknown =
+      transactionCallbackCompleted ||
+      error?.hasErrorLabel?.("UnknownTransactionCommitResult");
+    if (outcomeMayBeUnknown) {
+      let persistedOperation;
+      try {
+        persistedOperation = await getScoringOperationByRequest(
+          matchId,
+          requestId
+        );
+      } catch {
+        throw new ScoringServiceError(
+          "Delivery transaction outcome is unknown. Retry with the same Idempotency-Key.",
+          503
+        );
+      }
+      if (persistedOperation?.status !== "COMMITTED") {
+        throw new ScoringServiceError(
+          "Delivery transaction outcome is unknown. Retry with the same Idempotency-Key.",
+          503
+        );
+      }
+      operation = persistedOperation;
+      scorecard = persistedOperation.responseSnapshot;
+      if (!scorecard || typeof scorecard !== "object") {
+        throw new ScoringServiceError(
+          "Delivery committed, but its result could not be confirmed.",
+          503
+        );
+      }
+    } else {
+      try {
+        operation = await transitionScoringOperation(
+          operation.operationId,
+          "ABORTED"
+        );
+        await releaseOperationPermit(operation);
+      } catch {
+        throw new ScoringServiceError(
+          "Delivery was not committed, but its permit outcome could not be recorded.",
+          503
+        );
+      }
 
-    throw error;
+      if (
+        error?.code === 11000 ||
+        error?.hasErrorLabel?.("TransientTransactionError") ||
+        error?.hasErrorLabel?.("WriteConflict")
+      ) {
+        throw new ScoringServiceError(
+          "Another scoring update was recorded concurrently. Reload the scorecard and retry.",
+          409,
+          "DELIVERY_OPERATION_ABORTED"
+        );
+      }
+      if (error instanceof ScoringServiceError) {
+        error.code = "DELIVERY_OPERATION_ABORTED";
+      }
+      throw error;
+    }
   } finally {
-    await session.endSession();
+    if (session) {
+      try {
+        await session.endSession();
+      } catch (error) {
+        console.error(
+          `Unable to close delivery transaction session for operation ${operation.operationId}:`,
+          error.message
+        );
+      }
+    }
+  }
+
+  const permitReleasePending = await releaseOperationPermit({
+    ...operation,
+    status: operation.status || "COMMITTED",
+    outcome: "COMMITTED",
+  });
+  if (permitReleasePending) {
+    scorecard.permitReleasePending = true;
   }
 
   if (scorecard.status === "COMPLETED" && scorecard.inningsNumber === 2) {
     try {
-      await retryMatchFinalization(
-        scorecard.matchId.toString(),
-        scorecard._id
-      );
+      await retryMatchFinalization(scorecard.matchId.toString(), scorecard._id);
       scorecard.matchFinalizationStatus = "FINALIZED";
     } catch (error) {
       console.error(
@@ -963,6 +1457,20 @@ export async function recordDelivery(id, payload, authorization, userId) {
         error
       );
       scorecard.matchFinalizationStatus = "PENDING";
+    }
+
+    try {
+      const responseSnapshot = { ...scorecard };
+      delete responseSnapshot.permitReleasePending;
+      await updateScoringOperationResponse(
+        operation.operationId,
+        responseSnapshot
+      );
+    } catch (error) {
+      console.error(
+        `Unable to update committed response snapshot for scoring operation ${operation.operationId}:`,
+        error.message
+      );
     }
   }
 
@@ -1014,7 +1522,7 @@ export async function getDeliveryHistory(matchId, inningsId) {
     matchId: parsedMatchId,
     inningsId: parsedInningsId,
   })
-    .select("-createdBy")
+    .select("-createdBy -operationId")
     .sort({ sequence: 1 })
     .lean();
 }

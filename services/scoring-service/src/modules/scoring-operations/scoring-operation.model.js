@@ -4,6 +4,7 @@ const scoringOperationSchema = new mongoose.Schema(
   {
     operationId: { type: String, required: true, unique: true },
     requestId: { type: String, required: true, maxlength: 128 },
+    requestFingerprint: { type: String, required: true, match: /^[a-f\d]{64}$/i },
     matchId: {
       type: mongoose.Schema.Types.ObjectId,
       required: true,
@@ -34,6 +35,12 @@ const scoringOperationSchema = new mongoose.Schema(
       required: true,
       default: "PREPARED",
     },
+    outcome: {
+      type: String,
+      enum: ["COMMITTED", "ABORTED", null],
+      default: null,
+    },
+    responseSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
     resolvedAt: { type: Date, default: null },
   },
   {
