@@ -13,6 +13,9 @@ import Login from "./pages/Login.jsx";
 import Home from "./pages/Home.jsx";
 import Players from "./pages/Players.jsx";
 import MatchSetup from "./pages/MatchSetup.jsx";
+import MatchSquadSetup from "./pages/MatchSquadSetup.jsx";
+import Matches from "./pages/Matches.jsx";
+import ScoringSetup from "./pages/ScoringSetup.jsx";
 import ForgotPassword from "./pages/ForgotPassword.jsx";
 import ResetPassword from "./pages/ResetPassword.jsx";
 import Teams from "./pages/Teams.jsx";
@@ -176,6 +179,31 @@ function AppContent() {
             ) : (
               <Navigate to="/login" replace />
             )
+          }
+        />
+
+        <Route
+          path="/match-setup/:matchId/players"
+          element={
+            user ? (
+              <MatchSquadSetup />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
+
+        <Route
+          path="/matches"
+          element={
+            user ? <Matches /> : <Navigate to="/login" replace />
+          }
+        />
+
+        <Route
+          path="/matches/:matchId/scoring"
+          element={
+            user ? <ScoringSetup /> : <Navigate to="/login" replace />
           }
         />
 

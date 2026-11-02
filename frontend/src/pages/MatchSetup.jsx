@@ -195,6 +195,7 @@ export default function MatchSetup() {
       });
 
       setSuccessMatch(result.data);
+      navigate(`/match-setup/${result.data._id}/players`);
     } catch (err) {
       setError(err.message || "Unable to create the match.");
     } finally {

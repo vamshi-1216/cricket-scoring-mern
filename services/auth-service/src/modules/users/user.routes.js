@@ -13,7 +13,8 @@ import {
   forgotPasswordHandler,
   resetPasswordHandler,
   verifyPhoneForPasswordResetHandler,
-resetPasswordWithPhoneHandler
+resetPasswordWithPhoneHandler,
+updateCurrentUserProfileHandler
 } from "./user.controller.js";
 
 import { requireAuth } from "../../middleware/require-auth.js";
@@ -52,4 +53,6 @@ router.post(
   "/reset-password/phone",
   resetPasswordWithPhoneHandler
 );
+router.patch("/me", requireAuth, updateCurrentUserProfileHandler);
+
 export default router;

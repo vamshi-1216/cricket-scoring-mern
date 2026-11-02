@@ -32,6 +32,12 @@ import {
   PhonePasswordResetError,
 } from "./phone-password-reset.service.js";
 
+import {
+  updateUserProfile,
+  ProfileError,
+} from "./profile.service.js";
+
+import { updateProfileSchema } from "./profile.validation.js";
 
 import { createAccessToken } from "../../utils/jwt.js";
 import { env } from "../../config/env.js";
@@ -169,6 +175,41 @@ export function getCurrentUserHandler(req, res) {
     data: { user: req.user },
   });
 }
+
+export async function updateCurrentUserProfileHandler(req, res, next) {
+  try {
+    const validation = updateProfileSchema.safeParse(req.body);
+
+    if (!validation.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid profile data.",
+        errors: validation.error.issues.map((issue) => ({
+          field: issue.path.join("."),
+          message: issue.message,
+        })),
+      });
+    }
+
+    const user = await updateUserProfile(req.user.id, validation.data);
+
+    return res.status(200).json({
+      success: true,
+      message: "Profile updated successfully.",
+      data: { user },
+    });
+  } catch (error) {
+    if (error instanceof ProfileError) {
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    return next(error);
+  }
+}
+
 
 // Clear the session cookie
 export function logoutHandler(req, res) {

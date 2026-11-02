@@ -14,7 +14,6 @@ import {
 
   BarChart3,
 
-  CalendarDays,
 
   ChevronRight,
 
@@ -93,24 +92,6 @@ const quickActions = [
     accent: "text-violet-400",
 
     iconBg: "bg-violet-400/10",
-
-  },
-
-];
-
-const upcomingMatches = [
-
-  {
-
-    id: 1,
-
-    competition: "YOUR NEXT GAME",
-
-    title: "Ready for the toss?",
-
-    description: "Create a match to get your scoreboard started.",
-
-    date: "No match scheduled",
 
   },
 
@@ -218,7 +199,7 @@ export default function Home({ user, onLogout }) {
 
   if (title === "Match history") {
 
-    window.alert("Match history is coming next!");
+    navigate("/matches");
 
   }
 
@@ -283,7 +264,11 @@ export default function Home({ user, onLogout }) {
 
             <a
 
-              href="#matches"
+              href="/matches"
+              onClick={(event) => {
+                event.preventDefault();
+                navigate("/matches");
+              }}
 
               className="text-sm font-medium text-zinc-400 transition hover:text-white"
 
@@ -410,7 +395,12 @@ export default function Home({ user, onLogout }) {
 
               <a
 
-                href="#matches"
+                href="/matches"
+                onClick={(event) => {
+                  event.preventDefault();
+                  setMenuOpen(false);
+                  navigate("/matches");
+                }}
 
                 onClick={() => setMenuOpen(false)}
 
@@ -900,75 +890,40 @@ export default function Home({ user, onLogout }) {
               title="Your matches"
 
               action={
-
-                <span className="rounded-full border border-white/10 px-3 py-1 text-[10px] font-semibold text-zinc-400">
-
-                  Recent activity
-
-                </span>
+                <button
+                  type="button"
+                  onClick={() => navigate("/matches")}
+                  className="rounded-full border border-white/10 px-3 py-1 text-[10px] font-semibold text-zinc-400 transition hover:border-emerald-400/30 hover:text-emerald-300"
+                >
+                  View all matches
+                </button>
 
               }
 
             />
 
             <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/60 p-5 sm:p-6">
-
-              {upcomingMatches.map((match) => (
-
-                <div key={match.id} className="flex items-start gap-4">
-
-                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-emerald-400/15 bg-emerald-400/[0.07]">
-
-                    <Trophy size={21} className="text-emerald-300" />
-
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-
-                    <p className="text-[10px] font-bold tracking-[0.2em] text-emerald-400">
-
-                      {match.competition}
-
-                    </p>
-
-                    <h3 className="mt-2 text-sm font-bold text-white">
-
-                      {match.title}
-
-                    </h3>
-
-                    <p className="mt-2 text-xs leading-6 text-zinc-500">
-
-                      {match.description}
-
-                    </p>
-
-                    <p className="mt-3 flex items-center gap-2 text-[10px] text-zinc-500">
-
-                      <CalendarDays size={13} />
-
-                      {match.date}
-
-                    </p>
-
-                  </div>
-
+              <div className="flex items-start gap-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-emerald-400/15 bg-emerald-400/[0.07]">
+                  <Trophy size={21} className="text-emerald-300" />
                 </div>
-
-              ))}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-white">
+                    Your match list is ready
+                  </p>
+                  <p className="mt-2 text-xs leading-6 text-zinc-500">
+                    Open Matches to see games you&apos;ve created and continue
+                    their setup.
+                  </p>
+                </div>
+              </div>
 
               <button
-
                 type="button"
-
-                onClick={() => handleAction("Create a match")}
-
+                onClick={() => navigate("/matches")}
                 className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 px-4 py-3 text-xs font-bold text-zinc-300 transition hover:border-emerald-400/30 hover:text-emerald-300"
-
               >
-
-                Set up your first match <ArrowRight size={15} />
-
+                Open matches <ArrowRight size={15} />
               </button>
 
             </div>
