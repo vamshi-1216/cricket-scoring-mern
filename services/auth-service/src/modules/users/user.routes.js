@@ -16,13 +16,22 @@ import {
   resetPasswordWithPhoneHandler,
   updateCurrentUserProfileHandler,
   getScoringTransferTargetHandler,
+  getInternalScoringTransferTargetHandler,
   searchScoringTransferTargetsHandler,
 } from "./user.controller.js";
 
 import { requireAuth } from "../../middleware/require-auth.js";
+import { requireInternalService } from "../../middleware/require-internal-service.js";
 
 
 const router = Router();
+
+function preventCaching(req, res, next) {
+  res.set("Cache-Control", "no-store");
+  delete req.headers["if-none-match"];
+  delete req.headers["if-modified-since"];
+  next();
+}
 
 // Registration
 router.post("/register", register);
@@ -39,7 +48,12 @@ router.post("/login", loginHandler);
 router.post("/google", googleSignInHandler);
 
 // Authenticated session
-router.get("/me", requireAuth, getCurrentUserHandler);
+router.get("/me", preventCaching, requireAuth, getCurrentUserHandler);
+router.get(
+  "/internal/scoring-transfer-targets/:userId",
+  requireInternalService,
+  getInternalScoringTransferTargetHandler
+);
 router.get("/scoring-transfer-targets", requireAuth, searchScoringTransferTargetsHandler);
 router.get("/scoring-transfer-targets/:userId", requireAuth, getScoringTransferTargetHandler);
 

@@ -37,6 +37,7 @@ function AppContent() {
         const response = await fetch(`${API_URL}/me`, {
           method: "GET",
           credentials: "include",
+          cache: "no-store",
         });
 
         if (response.status === 401) {
@@ -80,6 +81,58 @@ function AppContent() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!user?.id) return undefined;
+
+    let cancelled = false;
+
+    async function refreshSession() {
+      try {
+        const response = await fetch(`${API_URL}/me`, {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+        });
+        const result = await response.json().catch(() => ({}));
+
+        if (response.status === 401) {
+          if (!cancelled) {
+            setUser(null);
+            setSessionError("Your session has expired. Please sign in again.");
+          }
+          return;
+        }
+
+        if (!response.ok || result.success !== true || !result.data?.user) {
+          throw new Error(
+            result.message || "Unable to verify your session."
+          );
+        }
+
+        if (!cancelled) {
+          setUser(result.data.user);
+          setSessionError("");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSessionError(
+            error instanceof TypeError
+              ? "Unable to connect to the authentication server."
+              : error.message || "Unable to verify your session."
+          );
+        }
+      }
+    }
+
+    const intervalId = window.setInterval(refreshSession, 5 * 60 * 1000);
+    window.addEventListener("focus", refreshSession);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshSession);
+    };
+  }, [user?.id]);
 
   function handleLoginSuccess(authenticatedUser) {
     setSessionError("");
@@ -195,9 +248,7 @@ function AppContent() {
 
         <Route
           path="/matches"
-          element={
-            user ? <Matches /> : <Navigate to="/login" replace />
-          }
+          element={<Matches user={user} />}
         />
 
         <Route

@@ -1,4 +1,3 @@
-
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
@@ -43,6 +42,29 @@ app.use(
 // HTTP-only session cookie parsing
 app.use(cookieParser());
 
+const dedicatedAuthRateLimitPaths = new Set([
+  "/v1/auth/login",
+  "/v1/auth/me",
+  "/v1/auth/send-email-otp",
+  "/v1/auth/verify-email-otp",
+  "/v1/auth/verify-phone-otp",
+  "/v1/auth/forgot-password",
+  "/v1/auth/reset-password",
+  "/v1/auth/forgot-password/verify-phone",
+  "/v1/auth/reset-password/phone",
+]);
+
+const sessionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 1000,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many session verification requests. Please try again later.",
+  },
+});
+
 // General API rate limit: 100 requests per 15 minutes
 app.use(
   "/api",
@@ -51,6 +73,8 @@ app.use(
     limit: 100,
     standardHeaders: "draft-8",
     legacyHeaders: false,
+    skip: (req) =>
+      dedicatedAuthRateLimitPaths.has(req.path.replace(/\/+$/, "")),
     message: {
       success: false,
       message: "Too many requests. Please try again later.",
@@ -99,6 +123,10 @@ const recoveryLimiter = rateLimit({
 // Apply endpoint-specific limits before authentication routes.
 app.use("/api/v1/auth", (req, res, next) => {
   const path = req.path;
+
+  if (req.method === "GET" && path === "/me") {
+    return sessionLimiter(req, res, next);
+  }
 
   if (req.method === "POST" && path === "/login") {
     return loginLimiter(req, res, next);

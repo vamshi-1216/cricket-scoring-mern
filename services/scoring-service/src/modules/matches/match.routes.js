@@ -9,6 +9,11 @@ router.post("/:matchId/innings", requireActiveScorer, controller.initializeInnin
 router.post("/:matchId/innings/2", requireActiveScorer, controller.initializeSecondInnings);
 router.get("/:matchId/scorecard", controller.getScorecard);
 router.get("/:matchId/innings", controller.getMatchInnings);
+router.get(
+  "/:matchId/scoring-permits/:permitId/operation",
+  requireInternalService,
+  controller.getPermitOperation
+);
 router.get("/:matchId/awards", requireInternalService, controller.getAwards);
 router.get("/:matchId/innings/:inningsId/deliveries", controller.getDeliveryHistory);
 

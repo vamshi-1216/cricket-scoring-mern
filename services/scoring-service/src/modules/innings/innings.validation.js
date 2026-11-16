@@ -28,6 +28,23 @@ export const inningsPlayersSchema = z.object({
   bowlerId: objectIdSchema,
 }).strict();
 
+export const endInningsSchema = z.object({
+  reason: z.enum(["MANUAL_END"]).default("MANUAL_END"),
+}).strict();
+
+export const retirementEventSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("RETIRE_HURT"),
+    playerId: objectIdSchema,
+    replacementPlayerId: objectIdSchema,
+    reason: z.enum(["INJURY", "UNABLE_TO_CONTINUE"]),
+  }).strict(),
+  z.object({
+    action: z.literal("RESUME_BATTING"),
+    playerId: objectIdSchema,
+  }).strict(),
+]);
+
 export const deliveryEventSchema = z.object({
   eventType: z.enum(["NORMAL", "WIDE", "NO_BALL", "BYE", "LEG_BYE", "PENALTY"]),
   batRuns: z.number().int().refine(

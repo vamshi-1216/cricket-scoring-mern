@@ -26,3 +26,11 @@ export function verifyAccessToken(token) {
     algorithms: ["HS256"],
   });
 }
+
+export function getAccessTokenMaxAge(token) {
+  const payload = jwt.decode(token);
+  if (!Number.isInteger(payload?.exp)) {
+    throw new Error("Access token expiration is unavailable.");
+  }
+  return Math.max(0, payload.exp * 1000 - Date.now());
+}

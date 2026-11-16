@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -34,7 +34,10 @@ async function apiRequest(url) {
   let response;
 
   try {
-    response = await fetch(url, { credentials: "include" });
+    response = await fetch(url, {
+      credentials: "include",
+      cache: "no-store",
+    });
   } catch {
     throw new Error(
       "Unable to connect to a required service. Check that the backend is running."
@@ -53,7 +56,11 @@ async function apiRequest(url) {
 }
 
 function idOf(value) {
-  return String(value?._id || value?.id || value || "");
+  return String(value?._id ?? value?.id ?? value ?? "");
+}
+
+function normalizedId(value) {
+  return idOf(value).trim().toLowerCase();
 }
 
 function hasLineup(match, side) {
@@ -87,6 +94,10 @@ function isUpcoming(match) {
 
 function isCompleted(match) {
   return normalizeMatchStatus(match) === "completed";
+}
+
+function isCancelled(match) {
+  return normalizeMatchStatus(match) === "cancelled";
 }
 
 function normalizeMatchStatus(match) {
@@ -264,7 +275,16 @@ function SectionHeading({ icon: Icon, title, count, tone = "text-white" }) {
   );
 }
 
-function MatchCard({ match, teamNames, onOpen, onScore }) {
+function MatchCard({
+  match,
+  teamNames,
+  onOpen,
+  onScore,
+  onManage,
+  scoringAccess,
+  scoringAccessError,
+  currentUserId,
+}) {
   const done = setupProgress(match);
   const setupComplete = done === 3;
   const teamAId = idOf(match.teamAId);
@@ -273,6 +293,15 @@ function MatchCard({ match, teamNames, onOpen, onScore }) {
   const live = isLive(match);
   const completed = normalizeMatchStatus(match) === "completed";
   const completedResultIsValid = completed && hasValidResult(match);
+  const isMatchOwner =
+    Boolean(currentUserId && scoringAccess) &&
+    normalizedId(scoringAccess.ownerId) === currentUserId;
+  const canContinueScoring =
+    live &&
+    Boolean(currentUserId && scoringAccess) &&
+    normalizedId(scoringAccess.activeScorerId) === currentUserId &&
+    scoringAccess.permitGate === "OPEN" &&
+    !scoringAccess.pendingCancellation;
   const statusText = live
     ? "Live"
     : String(match.status || "scheduled").trim().replace(/[_-]/g, " ");
@@ -377,27 +406,35 @@ function MatchCard({ match, teamNames, onOpen, onScore }) {
 
       {/* Action area */}
       {live ? (
-        <div className="mt-auto flex flex-col gap-3 border-t border-white/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+        <div className="mt-auto flex flex-col gap-3 border-t border-white/10 px-5 py-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:px-6">
           <p className="flex items-center gap-2 text-sm font-medium text-red-300">
             <Radio size={16} />
             Scoring in progress
           </p>
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={onOpen}
-              className={`inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-300 ${focusRing}`}
-            >
-              View setup
-            </button>
+            {isMatchOwner && !canContinueScoring && (
+              <button
+                type="button"
+                onClick={onManage}
+                className={`inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-300 ${focusRing}`}
+              >
+                Manage match
+              </button>
+            )}
             <button
               type="button"
               onClick={onScore}
               className={`inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-emerald-950 transition hover:bg-emerald-300 ${focusRing}`}
             >
-              Continue scoring
+              {canContinueScoring ? "Continue scoring" : "View scoreboard"}
             </button>
           </div>
+          {scoringAccessError && (
+            <p role="status" className="text-xs text-amber-200 sm:basis-full">
+              Unable to verify scoring access. Continue scoring is unavailable;
+              the scoreboard remains accessible.
+            </p>
+          )}
         </div>
       ) : completed ? (
         <div className="mt-auto flex justify-end border-t border-white/10 px-5 py-4 sm:px-6">
@@ -410,13 +447,23 @@ function MatchCard({ match, teamNames, onOpen, onScore }) {
                 : "border border-amber-300/30 bg-amber-300/10 text-amber-100 hover:bg-amber-300/15"
             }`}
           >
-            {completedResultIsValid ? "View Match Summary" : "Result Pending"}
+            View scorecard
           </button>
           {!completedResultIsValid && (
             <p className="sr-only">
               The match is completed, but its persisted result is not available yet.
             </p>
           )}
+        </div>
+      ) : isCancelled(match) ? (
+        <div className="mt-auto flex justify-end border-t border-white/10 px-5 py-4 sm:px-6">
+          <button
+            type="button"
+            onClick={onScore}
+            className={`inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-300 ${focusRing}`}
+          >
+            View scorecard
+          </button>
         </div>
       ) : (
         <div className="mt-auto flex flex-col gap-4 border-t border-white/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
@@ -425,14 +472,18 @@ function MatchCard({ match, teamNames, onOpen, onScore }) {
           </div>
           <button
             type="button"
-            onClick={onOpen}
+            onClick={currentUserId ? onOpen : onScore}
             className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition ${focusRing} ${
-              setupComplete
+              !currentUserId || setupComplete
                 ? "border border-white/10 text-zinc-200 hover:border-emerald-400/40 hover:text-emerald-300"
                 : "bg-emerald-400 text-emerald-950 hover:bg-emerald-300"
             }`}
           >
-            {setupComplete ? "View setup" : "Continue setup"}
+            {!currentUserId
+              ? "View scoreboard"
+              : setupComplete
+                ? "View setup"
+                : "Continue setup"}
           </button>
         </div>
       )}
@@ -442,17 +493,24 @@ function MatchCard({ match, teamNames, onOpen, onScore }) {
 
 /* ---------- page ---------- */
 
-export default function Matches() {
+export default function Matches({ user }) {
   const navigate = useNavigate();
+  const currentUserId = normalizedId(user?.id);
   const [matches, setMatches] = useState([]);
+  const [scoringAccessByMatch, setScoringAccessByMatch] = useState({});
+  const [scoringAccessUserId, setScoringAccessUserId] = useState("");
   const [teamNames, setTeamNames] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("all");
+  const requestId = useRef(0);
 
-  const loadMatches = useCallback(async () => {
-    setLoading(true);
+  const loadMatches = useCallback(async ({ silent = false } = {}) => {
+    const currentRequestId = ++requestId.current;
+    if (!silent) setLoading(true);
     setError("");
+    setScoringAccessByMatch({});
+    setScoringAccessUserId("");
 
     try {
       const [firstMatchPage, teamResult] = await Promise.all([
@@ -478,22 +536,84 @@ export default function Matches() {
         ),
       ];
       const loadedTeams = Array.isArray(teamResult.data) ? teamResult.data : [];
+      const accessEntries = currentUserId
+        ? await Promise.all(
+            loadedMatches.filter(isLive).map(async (match) => {
+              const matchId = idOf(match);
+              try {
+                const result = await apiRequest(
+                  `${MATCH_API_URL}/${matchId}/scoring-access`
+                );
+                const access = result.data;
+                if (
+                  result.success !== true ||
+                  !access ||
+                  !normalizedId(access.ownerId) ||
+                  !normalizedId(access.activeScorerId) ||
+                  !Number.isInteger(access.version) ||
+                  typeof access.matchStatus !== "string"
+                ) {
+                  return [
+                    matchId,
+                    {
+                      access: null,
+                      error: "Unable to verify scoring access.",
+                    },
+                  ];
+                }
+                return [matchId, { access, error: "" }];
+              } catch {
+                return [
+                  matchId,
+                  {
+                    access: null,
+                    error: "Unable to verify scoring access.",
+                  },
+                ];
+              }
+            })
+          )
+        : [];
 
-      setMatches(loadedMatches);
+      if (currentRequestId !== requestId.current) return;
+
+      const accessByMatch = Object.fromEntries(accessEntries);
+      const matchesWithFreshStatus = loadedMatches.map((match) => {
+        const status = accessByMatch[idOf(match)]?.access?.matchStatus;
+        return status ? { ...match, status } : match;
+      });
+
+      setMatches(matchesWithFreshStatus);
+      setScoringAccessByMatch(accessByMatch);
+      setScoringAccessUserId(currentUserId);
       setTeamNames(
         Object.fromEntries(
           loadedTeams.map((team) => [idOf(team), team.name || team.shortName])
         )
       );
     } catch (loadError) {
-      setError(loadError.message || "Unable to load matches.");
+      if (currentRequestId === requestId.current) {
+        setError(loadError.message || "Unable to load matches.");
+      }
     } finally {
-      setLoading(false);
+      if (currentRequestId === requestId.current) setLoading(false);
     }
-  }, []);
+  }, [currentUserId]);
 
   useEffect(() => {
-    void Promise.resolve().then(loadMatches);
+    void loadMatches();
+    const refreshMatches = () => {
+      if (!document.hidden) void loadMatches({ silent: true });
+    };
+    const intervalId = window.setInterval(refreshMatches, 30_000);
+    window.addEventListener("focus", refreshMatches);
+    window.addEventListener("matches-refresh", refreshMatches);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshMatches);
+      window.removeEventListener("matches-refresh", refreshMatches);
+      requestId.current += 1;
+    };
   }, [loadMatches]);
 
   const counts = useMemo(() => {
@@ -521,13 +641,30 @@ export default function Matches() {
   const showLiveSection = filter === "all" && liveMatches.length > 0;
 
   function renderCard(match) {
+    const matchId = idOf(match);
+    const scoringAccessEntry =
+      scoringAccessUserId === currentUserId
+        ? scoringAccessByMatch[matchId]
+        : null;
+    const scoringAccess = scoringAccessEntry?.access || null;
+    const currentMatch =
+      scoringAccess?.matchStatus
+        ? { ...match, status: scoringAccess.matchStatus }
+        : match;
+
     return (
       <MatchCard
-        key={idOf(match)}
-        match={match}
+        key={matchId}
+        match={currentMatch}
         teamNames={teamNames}
-        onOpen={() => navigate(`/match-setup/${idOf(match)}/players`)}
-        onScore={() => navigate(`/matches/${idOf(match)}/scoring`)}
+        onOpen={() => navigate(`/match-setup/${matchId}/players`)}
+        onScore={() => navigate(`/matches/${matchId}/scoring`)}
+        onManage={() =>
+          navigate(`/matches/${matchId}/scoring#scoring-access`)
+        }
+        scoringAccess={scoringAccess}
+        scoringAccessError={scoringAccessEntry?.error}
+        currentUserId={currentUserId}
       />
     );
   }
@@ -544,31 +681,33 @@ export default function Matches() {
       >
         <div className="mx-auto max-w-6xl px-4 pb-8 pt-6 sm:px-6 sm:pb-10 sm:pt-8">
           <Link
-            to="/home"
+            to={currentUserId ? "/home" : "/login"}
             className={`inline-flex items-center gap-2 rounded-md text-sm text-zinc-400 transition hover:text-emerald-300 ${focusRing}`}
           >
             <ArrowLeft size={16} />
-            Back to home
+            {currentUserId ? "Back to home" : "Sign in"}
           </Link>
 
           <div className="mt-6 flex flex-wrap items-end justify-between gap-6">
             <div className="max-w-xl">
               <h1 className="text-3xl font-black tracking-tight sm:text-4xl">
-                Your matches
+                {currentUserId ? "Your matches" : "Matches"}
               </h1>
               <p className="mt-2 text-sm leading-6 text-zinc-400">
                 Jump back into running matches, or finish squads and the toss
                 before scoring begins.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => navigate("/match-setup")}
-              className={`inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-400 px-5 py-3 text-sm font-bold text-emerald-950 transition hover:bg-emerald-300 ${focusRing}`}
-            >
-              <Plus size={17} strokeWidth={2.5} />
-              Create match
-            </button>
+            {currentUserId && (
+              <button
+                type="button"
+                onClick={() => navigate("/match-setup")}
+                className={`inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-400 px-5 py-3 text-sm font-bold text-emerald-950 transition hover:bg-emerald-300 ${focusRing}`}
+              >
+                <Plus size={17} strokeWidth={2.5} />
+                Create match
+              </button>
+            )}
           </div>
 
           {/* Summary strip */}
@@ -637,14 +776,16 @@ export default function Matches() {
                 Pick two teams, set the overs, and your match will show up here
                 for squad and toss setup.
               </p>
-              <button
-                type="button"
-                onClick={() => navigate("/match-setup")}
-                className={`mt-7 inline-flex items-center gap-2 rounded-xl bg-emerald-400 px-5 py-3 text-sm font-bold text-emerald-950 transition hover:bg-emerald-300 ${focusRing}`}
-              >
-                <Plus size={16} strokeWidth={2.5} />
-                Create your first match
-              </button>
+              {currentUserId && (
+                <button
+                  type="button"
+                  onClick={() => navigate("/match-setup")}
+                  className={`mt-7 inline-flex items-center gap-2 rounded-xl bg-emerald-400 px-5 py-3 text-sm font-bold text-emerald-950 transition hover:bg-emerald-300 ${focusRing}`}
+                >
+                  <Plus size={16} strokeWidth={2.5} />
+                  Create your first match
+                </button>
+              )}
             </section>
           )
         ) : (

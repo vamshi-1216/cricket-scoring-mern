@@ -20,6 +20,41 @@ const battingFigureSchema = new mongoose.Schema(
     sixes: { type: Number, min: 0, validate: Number.isInteger, default: 0 },
     isOut: { type: Boolean, default: false },
     dismissalType: { type: String, default: null },
+    retiredHurt: { type: Boolean, default: false },
+  },
+  { _id: false }
+);
+
+const retirementEventSchema = new mongoose.Schema(
+  {
+    operationId: { type: String, required: true },
+    eventType: {
+      type: String,
+      enum: ["RETIRED_HURT", "RESUMED_BATTING"],
+      required: true,
+    },
+    playerId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    replacementPlayerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    position: { type: String, enum: ["STRIKER", "NON_STRIKER"], required: true },
+    reason: {
+      type: String,
+      enum: ["INJURY", "UNABLE_TO_CONTINUE", null],
+      default: null,
+    },
+    createdAt: { type: Date, required: true },
+  },
+  { _id: false }
+);
+
+const inningsEndEventSchema = new mongoose.Schema(
+  {
+    operationId: { type: String, required: true },
+    reason: { type: String, enum: ["MANUAL_END"], required: true },
+    endedBy: { type: mongoose.Schema.Types.ObjectId, required: true },
+    endedAt: { type: Date, required: true },
   },
   { _id: false }
 );
@@ -81,6 +116,14 @@ const inningsSchema = new mongoose.Schema(
     extras: { type: extrasSchema, default: () => ({}) },
     battingFigures: { type: [battingFigureSchema], default: [] },
     bowlingFigures: { type: [bowlingFigureSchema], default: [] },
+    retirementEvents: { type: [retirementEventSchema], default: [] },
+    completionReason: {
+      type: String,
+      enum: ["AUTOMATIC", "MANUAL_END", null],
+      default: null,
+    },
+    completedAt: { type: Date, default: null },
+    endHistory: { type: [inningsEndEventSchema], default: [] },
     status: {
       type: String,
       enum: ["READY", "IN_PROGRESS", "COMPLETED", "ABANDONED"],
@@ -89,7 +132,7 @@ const inningsSchema = new mongoose.Schema(
     },
     matchFinalizationStatus: {
       type: String,
-      enum: ["PENDING", "FINALIZED"],
+      enum: ["PENDING", "FINALIZED", "CANCELLED"],
       default: null,
     },
     version: { type: Number, min: 0, validate: Number.isInteger, default: 0 },

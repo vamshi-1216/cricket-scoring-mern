@@ -39,11 +39,25 @@ import {
 
 import { updateProfileSchema } from "./profile.validation.js";
 
-import { createAccessToken } from "../../utils/jwt.js";
+import {
+  createAccessToken,
+  getAccessTokenMaxAge,
+} from "../../utils/jwt.js";
 import { env } from "../../config/env.js";
 import { authenticateWithPassword, LoginError } from "./login.service.js";
 import mongoose from "mongoose";
 import { User } from "./user.model.js";
+
+function setAccessTokenCookie(res, user) {
+  const token = createAccessToken(user);
+  res.cookie("access_token", token, {
+    httpOnly: true,
+    secure: env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: getAccessTokenMaxAge(token),
+    path: "/",
+  });
+}
 
 // Register a new user
 export async function register(req, res, next) {
@@ -143,15 +157,7 @@ export async function verifyPhoneOtpHandler(req, res, next) {
 export async function googleSignInHandler(req, res, next) {
   try {
     const user = await authenticateWithGoogle(req.body?.credential);
-    const token = createAccessToken(user);
-
-    res.cookie("access_token", token, {
-      httpOnly: true,
-      secure: env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 15 * 60 * 1000,
-      path: "/",
-    });
+    setAccessTokenCookie(res, user);
 
     return res.status(200).json({
       success: true,
@@ -172,6 +178,7 @@ export async function googleSignInHandler(req, res, next) {
 
 // Return the authenticated user's details
 export function getCurrentUserHandler(req, res) {
+  setAccessTokenCookie(res, req.user);
   return res.status(200).json({
     success: true,
     data: { user: req.user },
@@ -204,6 +211,38 @@ export async function getScoringTransferTargetHandler(req, res, next) {
     return res.status(200).json({
       success: true,
       data: { id: user._id.toString(), name: user.name },
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+export async function getInternalScoringTransferTargetHandler(req, res, next) {
+  if (!/^[a-f\d]{24}$/i.test(req.params.userId)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid user ID.",
+    });
+  }
+
+  try {
+    const user = await User.findOne({
+      _id: req.params.userId,
+      status: "active",
+    })
+      .select("_id")
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "Active registered user not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: { id: user._id.toString() },
     });
   } catch (error) {
     return next(error);
@@ -300,15 +339,7 @@ export async function loginHandler(req, res, next) {
       password: req.body?.password,
     });
 
-    const token = createAccessToken(user);
-
-    res.cookie("access_token", token, {
-      httpOnly: true,
-      secure: env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 15 * 60 * 1000,
-      path: "/",
-    });
+    setAccessTokenCookie(res, user);
 
     return res.status(200).json({
       success: true,

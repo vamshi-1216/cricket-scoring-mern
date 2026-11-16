@@ -2,7 +2,10 @@ import mongoose from "mongoose";
 import { createHash } from "node:crypto";
 import { env } from "../../config/env.js";
 import { Delivery } from "../deliveries/delivery.model.js";
-import { calculateDelivery } from "../scoring/scoring.engine.js";
+import {
+  calculateDelivery,
+  calculateRetirement,
+} from "../scoring/scoring.engine.js";
 import { deriveOvers, normalizeScoringEvent } from "../scoring/scoring.rules.js";
 import {
   getScoringOperationByRequest,
@@ -14,10 +17,12 @@ import {
 import { Innings } from "./innings.model.js";
 import {
   deliveryEventSchema,
+  endInningsSchema,
   inningsIdSchema,
   inningsInitializationSchema,
   inningsPlayersSchema,
   matchIdSchema,
+  retirementEventSchema,
 } from "./innings.validation.js";
 
 export class ScoringServiceError extends Error {
@@ -60,7 +65,7 @@ function stableSerialize(value) {
   return JSON.stringify(value);
 }
 
-function deliveryRequestFingerprint(inningsId, event) {
+function scoringRequestFingerprint(inningsId, event) {
   return createHash("sha256")
     .update(stableSerialize({ inningsId: String(inningsId), event }), "utf8")
     .digest("hex");
@@ -74,7 +79,7 @@ function assertOperationRequestIdentity(operation, expected) {
     operation.requestFingerprint !== expected.requestFingerprint
   ) {
     throw new ScoringServiceError(
-      "Idempotency-Key is already associated with a different delivery request.",
+      "Idempotency-Key is already associated with a different scoring request.",
       409
     );
   }
@@ -98,11 +103,67 @@ function internalServiceHeaders() {
   };
 }
 
+function sanitizedUrl(value) {
+  const parsed = new URL(value);
+  parsed.username = "";
+  parsed.password = "";
+  parsed.search = "";
+  parsed.hash = "";
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
+function permitTransportFailure(error) {
+  const causes = [];
+  for (let current = error; current && causes.length < 4; current = current.cause) {
+    causes.push(current);
+  }
+
+  const timeoutCause = causes.find((cause) =>
+    ["TimeoutError", "AbortError"].includes(cause.name) ||
+    ["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "ECONNABORTED"].includes(cause.code)
+  );
+  const refusedCause = causes.find((cause) => cause.code === "ECONNREFUSED");
+  const dnsCause = causes.find((cause) =>
+    ["ENOTFOUND", "EAI_AGAIN"].includes(cause.code)
+  );
+  const cause =
+    timeoutCause ||
+    refusedCause ||
+    dnsCause ||
+    causes[causes.length - 1] ||
+    error;
+  const code =
+    typeof cause.code === "string" && /^[A-Z0-9_]{1,48}$/.test(cause.code)
+      ? cause.code
+      : null;
+
+  return {
+    category: timeoutCause
+      ? "timeout"
+      : refusedCause
+        ? "connection_refused"
+        : dnsCause
+          ? "dns_error"
+          : error instanceof ScoringServiceError
+            ? "local_configuration_error"
+            : "connection_error",
+    errorName:
+      typeof error?.name === "string" && /^[A-Za-z0-9_]{1,48}$/.test(error.name)
+        ? error.name
+        : "UnknownError",
+    errorCode: code,
+  };
+}
+
 async function acquireMatchScoringPermit(matchId, scorerId, permissionVersion, requestId) {
   let response;
+  const targetEndpointPath =
+    `/api/v1/matches/${matchId}/scoring-permits`;
+  const effectiveMatchServiceUrl =
+    `${env.MATCH_SERVICE_URL.replace(/\/+$/, "")}${targetEndpointPath}`;
   try {
     response = await fetch(
-      `${env.MATCH_SERVICE_URL.replace(/\/+$/, "")}/api/v1/matches/${matchId}/scoring-permits`,
+      effectiveMatchServiceUrl,
       {
         method: "POST",
         headers: internalServiceHeaders(),
@@ -111,6 +172,14 @@ async function acquireMatchScoringPermit(matchId, scorerId, permissionVersion, r
       }
     );
   } catch (error) {
+    const failure = permitTransportFailure(error);
+    console.warn("Scoring Service permit acquisition diagnostic", {
+      effectiveMatchServiceUrl: sanitizedUrl(effectiveMatchServiceUrl),
+      targetEndpointPath,
+      errorName: failure.errorName,
+      errorCode: failure.errorCode,
+      failureCategory: failure.category,
+    });
     if (error instanceof ScoringServiceError) throw error;
     throw new ScoringServiceError(
       "Match Service is unavailable; a scoring permit could not be acquired.",
@@ -118,13 +187,29 @@ async function acquireMatchScoringPermit(matchId, scorerId, permissionVersion, r
     );
   }
 
-  const body = await response.json().catch(() => null);
+  let body;
+  let validJson = true;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+    validJson = false;
+  }
   if (
     !response.ok ||
     body?.success !== true ||
     body.data?.state !== "ACTIVE" ||
     typeof body.data?.created !== "boolean"
   ) {
+    console.warn("Scoring Service permit acquisition diagnostic", {
+      effectiveMatchServiceUrl: sanitizedUrl(effectiveMatchServiceUrl),
+      targetEndpointPath,
+      errorName: "ScoringServiceError",
+      errorCode: `HTTP_${response.status}`,
+      failureCategory: "http_response",
+      httpStatus: response.status,
+      validJson,
+    });
     const error = new ScoringServiceError(
       body?.message || "Match Service did not issue an active scoring permit.",
       response.status === 409 ? 409 : response.status >= 500 ? 503 : 403
@@ -139,6 +224,15 @@ async function acquireMatchScoringPermit(matchId, scorerId, permissionVersion, r
     body.data.requestId !== requestId ||
     typeof body.data.permitId !== "string"
   ) {
+    console.warn("Scoring Service permit acquisition diagnostic", {
+      effectiveMatchServiceUrl: sanitizedUrl(effectiveMatchServiceUrl),
+      targetEndpointPath,
+      errorName: "ScoringServiceError",
+      errorCode: "INVALID_PERMIT_RESPONSE",
+      failureCategory: "http_response",
+      httpStatus: response.status,
+      validJson,
+    });
     throw new ScoringServiceError(
       "Match Service returned an invalid scoring permit.",
       502
@@ -229,7 +323,7 @@ async function resolveExistingDeliveryOperation(operation, expected) {
 
   if (operation.status === "PREPARED") {
     throw new ScoringServiceError(
-      "This delivery request has an unresolved operation. Retry later; no second delivery was started.",
+      "This scoring request has an unresolved operation. Retry later; no second operation was started.",
       503
     );
   }
@@ -244,7 +338,7 @@ async function resolveExistingDeliveryOperation(operation, expected) {
     (operation.status === "ABORTED" && outcome !== "ABORTED")
   ) {
     throw new ScoringServiceError(
-      "This delivery request has an unresolved outcome. Retry later.",
+      "This scoring request has an unresolved outcome. Retry later.",
       503
     );
   }
@@ -255,14 +349,14 @@ async function resolveExistingDeliveryOperation(operation, expected) {
   });
   if (outcome === "ABORTED") {
     throw new ScoringServiceError(
-      "The previous delivery operation was aborted. Submit a new delivery request.",
+      "The previous scoring operation was aborted. Submit a new scoring request.",
       409,
       "DELIVERY_OPERATION_ABORTED"
     );
   }
   if (!operation.responseSnapshot) {
     throw new ScoringServiceError(
-      "The delivery committed, but its original response is unavailable.",
+      "The scoring operation committed, but its original response is unavailable.",
       503
     );
   }
@@ -408,7 +502,7 @@ async function revalidateScoringAuthorization(matchId, authorization) {
   }
 }
 
-async function finalizeMatchInService(matchId) {
+async function finalizeMatchInService(matchId, inningsId) {
   let response;
 
   try {
@@ -419,6 +513,7 @@ async function finalizeMatchInService(matchId) {
         headers: {
           Accept: "application/json",
           "X-Internal-Service-Secret": env.INTERNAL_SERVICE_SECRET || "",
+          "Idempotency-Key": `match-finalization:${matchId}:${inningsId}`,
         },
         signal: AbortSignal.timeout(5000),
       }
@@ -441,27 +536,51 @@ async function finalizeMatchInService(matchId) {
   }
 
   if (
+    response.status === 202 &&
+    result?.success === true &&
+    result.data?.operationId &&
+    ["DRAINING", "FINALIZING", "RECONCILIATION_REQUIRED"].includes(
+      result.data.operationStatus
+    )
+  ) {
+    throw new ScoringServiceError(
+      result.message || "Match finalization remains pending.",
+      503
+    );
+  }
+
+  if (
+    response.status === 409 &&
+    result?.success === false &&
+    result.data?.operationStatus === "CANCELLED"
+  ) {
+    return "CANCELLED";
+  }
+
+  if (
     !response.ok ||
     result?.success !== true ||
-    result.data?.status !== "completed" ||
-    !result.data?.result
+    result.data?.operationStatus !== "COMPLETED" ||
+    result.data?.match?.status !== "completed" ||
+    !result.data?.match?.result
   ) {
     throw new ScoringServiceError(
       result?.message || "Match Service did not confirm match finalization.",
       response.status >= 500 ? 503 : 409
     );
   }
+  return "FINALIZED";
 }
 
 async function retryMatchFinalization(matchId, inningsId) {
-  await finalizeMatchInService(matchId);
+  const finalizationStatus = await finalizeMatchInService(matchId, inningsId);
   const updated = await Innings.updateOne(
     {
       _id: inningsId,
       status: "COMPLETED",
       inningsNumber: 2,
     },
-    { $set: { matchFinalizationStatus: "FINALIZED" } }
+    { $set: { matchFinalizationStatus: finalizationStatus } }
   );
 
   if (updated.matchedCount !== 1) {
@@ -470,6 +589,7 @@ async function retryMatchFinalization(matchId, inningsId) {
       500
     );
   }
+  return finalizationStatus;
 }
 
 let retryingPendingFinalizations = false;
@@ -483,7 +603,7 @@ export async function retryPendingMatchFinalizations() {
       inningsNumber: 2,
       status: "COMPLETED",
       targetRuns: { $type: "number" },
-      matchFinalizationStatus: { $ne: "FINALIZED" },
+      matchFinalizationStatus: { $nin: ["FINALIZED", "CANCELLED"] },
     })
       .sort({ updatedAt: 1 })
       .limit(25)
@@ -928,10 +1048,18 @@ export async function setInningsPlayers(id, payload, authorization) {
     (currentStriker && selected.strikerId !== currentStriker) ||
     (currentNonStriker && selected.nonStrikerId !== currentNonStriker)
   ) {
+    const incomingPlayerId = currentStriker
+      ? selected.nonStrikerId
+      : selected.strikerId;
+    const incomingHasBatted = (innings.battingFigures || []).some(
+      (figure) => figure.playerId.toString().toLowerCase() === incomingPlayerId
+    );
     const isFillingVacancy =
       innings.awaitingBatter &&
+      Boolean(currentStriker) !== Boolean(currentNonStriker) &&
       ((!currentStriker && selected.nonStrikerId === currentNonStriker) ||
-        (!currentNonStriker && selected.strikerId === currentStriker));
+        (!currentNonStriker && selected.strikerId === currentStriker)) &&
+      !incomingHasBatted;
 
     if (!isFillingVacancy) {
       throw new ScoringServiceError(
@@ -1048,6 +1176,87 @@ function validateDismissal(event, innings) {
   }
 }
 
+function validateRetirement(event, innings, battingSquad) {
+  const playerId = String(event.playerId).toLowerCase();
+  const strikerId = innings.strikerId?.toString().toLowerCase() || null;
+  const nonStrikerId = innings.nonStrikerId?.toString().toLowerCase() || null;
+  const figures = innings.battingFigures || [];
+  const figure = figures.find(
+    (item) => item.playerId.toString().toLowerCase() === playerId
+  );
+
+  if (!battingSquad.includes(playerId)) {
+    throw new ScoringServiceError(
+      "The batter must belong to the batting squad.",
+      400
+    );
+  }
+
+  if (event.action === "RETIRE_HURT") {
+    const replacementPlayerId = String(event.replacementPlayerId).toLowerCase();
+    if (innings.awaitingBatter || !strikerId || !nonStrikerId || strikerId === nonStrikerId) {
+      throw new ScoringServiceError(
+        "Retired Hurt requires two active batters and no pending batter vacancy.",
+        409
+      );
+    }
+    if (![strikerId, nonStrikerId].includes(playerId)) {
+      throw new ScoringServiceError(
+        "Only an active batter can retire hurt.",
+        400
+      );
+    }
+    if (figure?.isOut) {
+      throw new ScoringServiceError(
+        "A dismissed batter cannot retire hurt.",
+        409
+      );
+    }
+    if (
+      !battingSquad.includes(replacementPlayerId) ||
+      replacementPlayerId === strikerId ||
+      replacementPlayerId === nonStrikerId
+    ) {
+      throw new ScoringServiceError(
+        "The incoming batter must be a different player from the batting squad.",
+        400
+      );
+    }
+    if (figures.some(
+      (item) =>
+        item.playerId.toString().toLowerCase() === replacementPlayerId
+    )) {
+      throw new ScoringServiceError(
+        "The incoming batter must be a player who has not already batted.",
+        409
+      );
+    }
+    return;
+  }
+
+  if (
+    !innings.awaitingBatter ||
+    Boolean(strikerId) === Boolean(nonStrikerId)
+  ) {
+    throw new ScoringServiceError(
+      "A retired-hurt batter can resume only when a batter vacancy is available.",
+      409
+    );
+  }
+  if (!figure?.retiredHurt || figure.isOut) {
+    throw new ScoringServiceError(
+      "Only a dismissed-free retired-hurt batter can resume batting.",
+      409
+    );
+  }
+  if (strikerId === playerId || nonStrikerId === playerId) {
+    throw new ScoringServiceError(
+      "A batter who is already active cannot resume batting twice.",
+      409
+    );
+  }
+}
+
 function validateFieldingAttribution(event, bowlingSquad) {
   const fielderIds = event.wicket?.fieldingAttribution?.fielderIds;
   if (!fielderIds) return;
@@ -1071,19 +1280,58 @@ export async function recordDelivery(
   userId,
   idempotencyKey
 ) {
+  return recordScoringOperation(
+    id,
+    payload,
+    authorization,
+    userId,
+    idempotencyKey,
+    "DELIVERY"
+  );
+}
+
+export async function recordRetirement(
+  id,
+  payload,
+  authorization,
+  userId,
+  idempotencyKey
+) {
+  return recordScoringOperation(
+    id,
+    payload,
+    authorization,
+    userId,
+    idempotencyKey,
+    "RETIREMENT"
+  );
+}
+
+async function recordScoringOperation(
+  id,
+  payload,
+  authorization,
+  userId,
+  idempotencyKey,
+  operationType
+) {
   const inningsId = parseId(inningsIdSchema, id, "Invalid innings ID.");
   const requestId = validateIdempotencyKey(idempotencyKey);
-  const parsed = deliveryEventSchema.safeParse(payload);
+  const isRetirement = operationType === "RETIREMENT";
+  const parsed = (isRetirement ? retirementEventSchema : deliveryEventSchema)
+    .safeParse(payload);
 
   if (!parsed.success) {
     throw new ScoringServiceError(parsed.error.issues[0].message, 400);
   }
 
-  let event;
-  try {
-    event = normalizeScoringEvent(parsed.data);
-  } catch (error) {
-    throw new ScoringServiceError(error.message, 400);
+  let event = parsed.data;
+  if (!isRetirement) {
+    try {
+      event = normalizeScoringEvent(parsed.data);
+    } catch (error) {
+      throw new ScoringServiceError(error.message, 400);
+    }
   }
   if (
     typeof userId !== "string" ||
@@ -1104,7 +1352,7 @@ export async function recordDelivery(
     throw new ScoringServiceError("Scoring permission is unavailable.", 403);
   }
   const scorerId = userId.toLowerCase();
-  const requestFingerprint = deliveryRequestFingerprint(inningsId, event);
+  const requestFingerprint = scoringRequestFingerprint(inningsId, event);
   const expectedOperationIdentity = {
     matchId: matchId.toLowerCase(),
     inningsId: String(inningsId).toLowerCase(),
@@ -1150,7 +1398,7 @@ export async function recordDelivery(
     );
     if (!concurrentOperation) {
       throw new ScoringServiceError(
-        "Another request is preparing this delivery. Retry with the same Idempotency-Key.",
+        "Another request is preparing a scoring operation. Retry with the same Idempotency-Key.",
         503
       );
     }
@@ -1233,40 +1481,48 @@ export async function recordDelivery(
       }
       if (!["READY", "IN_PROGRESS"].includes(innings.status)) {
         throw new ScoringServiceError(
-          "Deliveries cannot be recorded for this innings.",
+          "Scoring operations cannot be recorded for this innings.",
           409
         );
       }
-      if (innings.awaitingBatter) {
-        throw new ScoringServiceError(
-          "Select an incoming batter before recording another delivery.",
-          409
-        );
-      }
-      if (!innings.strikerId || !innings.nonStrikerId || !innings.currentBowlerId) {
-        throw new ScoringServiceError(
-          "Select the striker, non-striker, and bowler before scoring.",
-          400
-        );
-      }
-      if (innings.strikerId.toString() === innings.nonStrikerId.toString()) {
-        throw new ScoringServiceError(
-          "Striker and non-striker must be different players.",
-          400
-        );
+      if (isRetirement) {
+        validateRetirement(event, innings, battingSquad);
+      } else {
+        if (innings.awaitingBatter) {
+          throw new ScoringServiceError(
+            "Select an incoming batter before recording another delivery.",
+            409
+          );
+        }
+        if (!innings.strikerId || !innings.nonStrikerId || !innings.currentBowlerId) {
+          throw new ScoringServiceError(
+            "Select the striker, non-striker, and bowler before scoring.",
+            400
+          );
+        }
+        if (innings.strikerId.toString() === innings.nonStrikerId.toString()) {
+          throw new ScoringServiceError(
+            "Striker and non-striker must be different players.",
+            400
+          );
+        }
       }
 
-      const strikerId = innings.strikerId.toString().toLowerCase();
-      const nonStrikerId = innings.nonStrikerId.toString().toLowerCase();
-      const bowlerId = innings.currentBowlerId.toString().toLowerCase();
+      const strikerId = innings.strikerId?.toString().toLowerCase() || null;
+      const nonStrikerId = innings.nonStrikerId?.toString().toLowerCase() || null;
+      const bowlerId = innings.currentBowlerId?.toString().toLowerCase() || null;
 
-      if (!battingSquad.includes(strikerId) || !battingSquad.includes(nonStrikerId)) {
+      if (
+        [strikerId, nonStrikerId]
+          .filter(Boolean)
+          .some((playerId) => !battingSquad.includes(playerId))
+      ) {
         throw new ScoringServiceError(
           "Current batters must belong to the batting squad.",
           400
         );
       }
-      if (!bowlingSquad.includes(bowlerId)) {
+      if (!isRetirement && !bowlingSquad.includes(bowlerId)) {
         throw new ScoringServiceError(
           "Current bowler must belong to the bowling squad.",
           400
@@ -1280,6 +1536,56 @@ export async function recordDelivery(
         innings.wickets >= maxWickets
       ) {
         throw new ScoringServiceError("The innings is already complete.", 409);
+      }
+
+      if (isRetirement) {
+        const result = calculateRetirement(
+          innings,
+          event,
+          operation.operationId
+        );
+        await revalidateScoringAuthorization(
+          innings.matchId.toString(),
+          authorization
+        );
+        const updatedInnings = await Innings.findOneAndUpdate(
+          {
+            _id: inningsId,
+            version: innings.version,
+            status: innings.status,
+          },
+          {
+            $set: {
+              ...result.state,
+              retirementEvents: [
+                ...(innings.retirementEvents || []),
+                result.retirementEvent,
+              ],
+            },
+            $inc: { version: 1 },
+          },
+          { new: true, runValidators: true, session }
+        ).lean();
+
+        if (!updatedInnings) {
+          throw new ScoringServiceError(
+            "Innings changed while recording the retirement. Retry the request.",
+            409
+          );
+        }
+
+        scorecard = {
+          ...updatedInnings,
+          overs: deriveOvers(updatedInnings.legalBalls),
+          latestRetirement: result.retirementEvent,
+        };
+        operation = await transitionScoringOperation(
+          operation.operationId,
+          "COMMITTED",
+          { session, responseSnapshot: scorecard }
+        );
+        transactionCallbackCompleted = true;
+        return;
       }
 
       validateDismissal(event, innings);
@@ -1333,6 +1639,12 @@ export async function recordDelivery(
           $set: {
             ...nextState,
             status: result.completed ? "COMPLETED" : "IN_PROGRESS",
+            ...(result.completed
+              ? {
+                  completionReason: "AUTOMATIC",
+                  completedAt: new Date(),
+                }
+              : {}),
             awaitingBatter: result.awaitingBatter,
             ...(result.completed && innings.inningsNumber === 2
               ? { matchFinalizationStatus: "PENDING" }
@@ -1377,13 +1689,13 @@ export async function recordDelivery(
         );
       } catch {
         throw new ScoringServiceError(
-          "Delivery transaction outcome is unknown. Retry with the same Idempotency-Key.",
+          "Scoring transaction outcome is unknown. Retry with the same Idempotency-Key.",
           503
         );
       }
       if (persistedOperation?.status !== "COMMITTED") {
         throw new ScoringServiceError(
-          "Delivery transaction outcome is unknown. Retry with the same Idempotency-Key.",
+          "Scoring transaction outcome is unknown. Retry with the same Idempotency-Key.",
           503
         );
       }
@@ -1391,7 +1703,7 @@ export async function recordDelivery(
       scorecard = persistedOperation.responseSnapshot;
       if (!scorecard || typeof scorecard !== "object") {
         throw new ScoringServiceError(
-          "Delivery committed, but its result could not be confirmed.",
+          "Scoring operation committed, but its result could not be confirmed.",
           503
         );
       }
@@ -1449,8 +1761,10 @@ export async function recordDelivery(
 
   if (scorecard.status === "COMPLETED" && scorecard.inningsNumber === 2) {
     try {
-      await retryMatchFinalization(scorecard.matchId.toString(), scorecard._id);
-      scorecard.matchFinalizationStatus = "FINALIZED";
+      scorecard.matchFinalizationStatus = await retryMatchFinalization(
+        scorecard.matchId.toString(),
+        scorecard._id
+      );
     } catch (error) {
       console.error(
         `Match finalization failed for match ${scorecard.matchId}; it will be retried:`,
@@ -1474,6 +1788,328 @@ export async function recordDelivery(
     }
   }
 
+  return scorecard;
+}
+
+async function completeManualEndFollowUp(scorecard, match, authorization) {
+  const supportedLimitedOversFormat = ["T10", "T20", "ODI", "CUSTOM"].includes(
+    match.format
+  );
+  if (
+    scorecard.inningsNumber === 1 &&
+    match.inningsPerTeam === 1 &&
+    supportedLimitedOversFormat
+  ) {
+    const result = await initializeSecondInnings(
+      String(match._id || match._id?.toString?.() || scorecard.matchId),
+      authorization
+    );
+    scorecard.nextInnings = result.innings;
+  } else if (
+    scorecard.inningsNumber === 2 &&
+    match.inningsPerTeam === 1 &&
+    supportedLimitedOversFormat
+  ) {
+    try {
+      scorecard.matchFinalizationStatus = await retryMatchFinalization(
+        String(scorecard.matchId),
+        scorecard._id
+      );
+    } catch (error) {
+      console.error(
+        `Match finalization failed after manually ending innings for match ${scorecard.matchId}; it will be retried:`,
+        error
+      );
+      await Innings.updateOne(
+        { _id: scorecard._id, status: "COMPLETED", inningsNumber: 2 },
+        { $set: { matchFinalizationStatus: "PENDING" } }
+      );
+      scorecard.matchFinalizationStatus = "PENDING";
+    }
+  }
+  return scorecard;
+}
+
+export async function endInnings(
+  id,
+  payload,
+  authorization,
+  userId,
+  requestId
+) {
+  const inningsId = parseId(inningsIdSchema, id, "Invalid innings ID.");
+  const parsed = endInningsSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new ScoringServiceError(parsed.error.issues[0].message, 400);
+  }
+  validateIdempotencyKey(requestId);
+  if (
+    typeof userId !== "string" ||
+    !/^[a-f\d]{24}$/i.test(userId) ||
+    authorization?.matchId == null ||
+    !Number.isInteger(authorization.version)
+  ) {
+    throw new ScoringServiceError("Scoring permission is unavailable.", 403);
+  }
+
+  const initialInnings = await Innings.findById(inningsId).lean();
+  if (!initialInnings) {
+    throw new ScoringServiceError("Innings not found.", 404);
+  }
+  const matchId = String(initialInnings.matchId);
+  if (authorization.matchId !== matchId) {
+    throw new ScoringServiceError("Scoring permission is unavailable.", 403);
+  }
+
+  const scorerId = userId.toLowerCase();
+  const requestFingerprint = createHash("sha256")
+    .update(
+      stableSerialize({
+        action: "END_INNINGS",
+        inningsId: String(inningsId),
+        reason: parsed.data.reason,
+      }),
+      "utf8"
+    )
+    .digest("hex");
+  const expectedOperationIdentity = {
+    matchId: matchId.toLowerCase(),
+    inningsId: String(inningsId).toLowerCase(),
+    scorerId,
+    requestFingerprint,
+  };
+  const match = await getSavedMatch(matchId);
+
+  async function resolveAndComplete(operation) {
+    const scorecard = await resolveExistingDeliveryOperation(
+      operation,
+      expectedOperationIdentity
+    );
+    return completeManualEndFollowUp(scorecard, match, authorization);
+  }
+
+  const priorOperation = await getScoringOperationByRequest(matchId, requestId);
+  if (priorOperation) return resolveAndComplete(priorOperation);
+
+  let permit;
+  try {
+    permit = await acquireMatchScoringPermit(
+      matchId,
+      scorerId,
+      authorization.version,
+      requestId
+    );
+  } catch (error) {
+    if (!error.matchServiceConflict) throw error;
+    const previousOperation = await findExistingOperationAfterPermitRace(
+      matchId,
+      requestId
+    );
+    if (!previousOperation) throw error;
+    return resolveAndComplete(previousOperation);
+  }
+
+  if (!permit.created) {
+    const concurrentOperation = await findExistingOperationAfterPermitRace(
+      matchId,
+      requestId
+    );
+    if (!concurrentOperation) {
+      throw new ScoringServiceError(
+        "Another scoring operation is preparing this request. Retry with the same Idempotency-Key.",
+        503
+      );
+    }
+    return resolveAndComplete(concurrentOperation);
+  }
+
+  let operation;
+  let created;
+  try {
+    created = await createScoringOperation({
+      requestId,
+      matchId,
+      inningsId,
+      scorerId,
+      permissionVersion: authorization.version,
+      permitId: permit.permitId,
+      requestFingerprint,
+    });
+  } catch (error) {
+    let concurrentOperation;
+    try {
+      concurrentOperation = await getScoringOperationByRequest(
+        matchId,
+        requestId
+      );
+    } catch {
+      throw new ScoringServiceError(
+        "Journal creation outcome is unresolved. Retry with the same Idempotency-Key.",
+        503
+      );
+    }
+    if (concurrentOperation) {
+      if (concurrentOperation.permitId !== permit.permitId) {
+        await releaseUnusedPermit(permit);
+      }
+      return resolveAndComplete(concurrentOperation);
+    }
+    if (!journalCreationDefinitelyFailed(error)) {
+      throw new ScoringServiceError(
+        "Journal creation outcome is unresolved. Retry with the same Idempotency-Key.",
+        503
+      );
+    }
+    await releaseUnusedPermit(permit);
+    throw error;
+  }
+
+  operation = created.operation;
+  if (!created.created) {
+    if (operation.permitId !== permit.permitId) {
+      await releaseUnusedPermit(permit);
+    }
+    return resolveAndComplete(operation);
+  }
+
+  let session;
+  let scorecard;
+  let transactionCallbackCompleted = false;
+  try {
+    session = await mongoose.startSession();
+    await session.withTransaction(async () => {
+      transactionCallbackCompleted = false;
+      const innings = await Innings.findById(inningsId).session(session).lean();
+      if (!innings) {
+        throw new ScoringServiceError("Innings not found.", 404);
+      }
+      if (!["READY", "IN_PROGRESS"].includes(innings.status)) {
+        throw new ScoringServiceError(
+          "Only an active innings can be ended manually.",
+          409
+        );
+      }
+
+      await revalidateScoringAuthorization(matchId, authorization);
+      const endedAt = new Date();
+      const endEvent = {
+        operationId: operation.operationId,
+        reason: parsed.data.reason,
+        endedBy: userId,
+        endedAt,
+      };
+      const updatedInnings = await Innings.findOneAndUpdate(
+        {
+          _id: inningsId,
+          version: innings.version,
+          status: innings.status,
+        },
+        {
+          $set: {
+            status: "COMPLETED",
+            completionReason: "MANUAL_END",
+            completedAt: endedAt,
+          },
+          $push: { endHistory: endEvent },
+          $inc: { version: 1 },
+        },
+        { new: true, runValidators: true, session }
+      ).lean();
+      if (!updatedInnings) {
+        throw new ScoringServiceError(
+          "Innings changed while ending it. Reload the scorecard and retry.",
+          409
+        );
+      }
+
+      scorecard = {
+        ...updatedInnings,
+        overs: deriveOvers(updatedInnings.legalBalls),
+      };
+      operation = await transitionScoringOperation(
+        operation.operationId,
+        "COMMITTED",
+        { session, responseSnapshot: scorecard }
+      );
+      transactionCallbackCompleted = true;
+    });
+  } catch (error) {
+    const outcomeMayBeUnknown =
+      transactionCallbackCompleted ||
+      error?.hasErrorLabel?.("UnknownTransactionCommitResult");
+    if (outcomeMayBeUnknown) {
+      let persistedOperation;
+      try {
+        persistedOperation = await getScoringOperationByRequest(
+          matchId,
+          requestId
+        );
+      } catch {
+        throw new ScoringServiceError(
+          "Innings end transaction outcome is unknown. Retry with the same Idempotency-Key.",
+          503
+        );
+      }
+      if (persistedOperation?.status !== "COMMITTED") {
+        throw new ScoringServiceError(
+          "Innings end transaction outcome is unknown. Retry with the same Idempotency-Key.",
+          503
+        );
+      }
+      operation = persistedOperation;
+      scorecard = persistedOperation.responseSnapshot;
+      if (!scorecard || typeof scorecard !== "object") {
+        throw new ScoringServiceError(
+          "The innings ended, but its result could not be confirmed.",
+          503
+        );
+      }
+    } else {
+      try {
+        operation = await transitionScoringOperation(
+          operation.operationId,
+          "ABORTED"
+        );
+        await releaseOperationPermit(operation);
+      } catch {
+        throw new ScoringServiceError(
+          "The innings end was not committed, but its permit outcome could not be recorded.",
+          503
+        );
+      }
+      throw error;
+    }
+  } finally {
+    if (session) {
+      try {
+        await session.endSession();
+      } catch (error) {
+        console.error(
+          `Unable to close manual innings-end transaction for operation ${operation.operationId}:`,
+          error.message
+        );
+      }
+    }
+  }
+
+  const permitReleasePending = await releaseOperationPermit({
+    ...operation,
+    status: operation.status || "COMMITTED",
+    outcome: "COMMITTED",
+  });
+  if (permitReleasePending) scorecard.permitReleasePending = true;
+
+  scorecard = await completeManualEndFollowUp(scorecard, match, authorization);
+  try {
+    const responseSnapshot = { ...scorecard };
+    delete responseSnapshot.permitReleasePending;
+    await updateScoringOperationResponse(operation.operationId, responseSnapshot);
+  } catch (error) {
+    console.error(
+      `Unable to update manually ended innings response snapshot for operation ${operation.operationId}:`,
+      error.message
+    );
+  }
   return scorecard;
 }
 

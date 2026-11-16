@@ -6,6 +6,8 @@ const router = Router();
 
 router.patch("/:inningsId/players", requireActiveScorer, controller.setPlayers);
 router.post("/:inningsId/deliveries", requireActiveScorer, controller.recordDelivery);
+router.post("/:inningsId/retirements", requireActiveScorer, controller.recordRetirement);
+router.post("/:inningsId/end", requireActiveScorer, controller.endInnings);
 router.get("/:inningsId", controller.getById);
 
 export default router;

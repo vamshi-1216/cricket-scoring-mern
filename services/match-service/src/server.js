@@ -1,9 +1,28 @@
 import app from "./app.js";
 import { env } from "./config/env.js";
 import { connectDatabase, disconnectDatabase } from "./config/database.js";
+import {
+  resumePendingMatchFinalizations,
+  resumePendingScoringAccessChanges,
+} from "./modules/matches/match.service.js";
 
 let server;
 let shuttingDown = false;
+let scoringAccessRecoveryTimer;
+let recoveryRunning = false;
+
+async function recoverPendingScoringAccessChanges() {
+  if (recoveryRunning || shuttingDown) return;
+  recoveryRunning = true;
+  try {
+    await resumePendingScoringAccessChanges();
+    await resumePendingMatchFinalizations();
+  } catch (error) {
+    console.error("Scoring access recovery pass failed:", error);
+  } finally {
+    recoveryRunning = false;
+  }
+}
 
 async function startServer() {
   await connectDatabase();
@@ -11,6 +30,12 @@ async function startServer() {
   server = app.listen(env.PORT, () => {
     console.log(`Match Service running on port ${env.PORT}`);
   });
+  scoringAccessRecoveryTimer = setInterval(
+    () => void recoverPendingScoringAccessChanges(),
+    5000
+  );
+  scoringAccessRecoveryTimer.unref();
+  void recoverPendingScoringAccessChanges();
 }
 
 async function shutdown(signal) {
@@ -25,6 +50,7 @@ async function shutdown(signal) {
   }, 10000);
 
   forceExitTimer.unref();
+  if (scoringAccessRecoveryTimer) clearInterval(scoringAccessRecoveryTimer);
 
   try {
     if (server) {

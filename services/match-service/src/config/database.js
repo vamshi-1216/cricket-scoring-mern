@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { env } from "./env.js";
+import { Match } from "../modules/matches/match.model.js";
 import { ScoringPermit } from "../modules/matches/scoring-permit.model.js";
 
 export async function connectDatabase() {
@@ -8,6 +9,7 @@ export async function connectDatabase() {
   await mongoose.connect(env.MONGODB_URI, {
     serverSelectionTimeoutMS: 5000,
   });
+  await Match.createIndexes();
   await ScoringPermit.createIndexes();
 
   console.log("Match Service connected to MongoDB");

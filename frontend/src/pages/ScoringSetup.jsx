@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, CircleAlert, Keyboard, LoaderCircle, Trophy } from "lucide-react";
 
 const SCORING_API_URL =
@@ -89,6 +89,7 @@ const MODE_HELP = {
   LEG_BYE: "Leg-byes. Tap the runs completed.",
   PENALTY: "Penalty runs. Tap the runs awarded.",
   WICKET: "Choose the dismissal, then confirm the wicket.",
+  RETIRE_HURT: "Choose the batter, reason, and eligible replacement.",
 };
 
 const DEFAULT_HINT =
@@ -100,6 +101,7 @@ async function apiRequest(url, options = {}) {
   try {
     response = await fetch(url, {
       credentials: "include",
+      cache: "no-store",
       ...options,
       headers: {
         ...(options.body ? { "Content-Type": "application/json" } : {}),
@@ -479,19 +481,26 @@ function ScoreSetupForm({
   saving,
   onSubmit,
   replacement,
+  retiredHurtBatters,
+  onResume,
 }) {
-  const outIds = (innings.battingFigures || [])
-    .filter((figure) => figure.isOut)
-    .map((figure) => idOf(figure.playerId));
+  const [resumePlayerId, setResumePlayerId] = useState(
+    retiredHurtBatters[0] ? idOf(retiredHurtBatters[0]) : ""
+  );
+  const battedIds = new Set(
+    (innings.battingFigures || []).map((figure) => idOf(figure.playerId))
+  );
+  const eligiblePlayer = (player, selectedId) =>
+    !battedIds.has(idOf(player)) || idOf(player) === selectedId;
   const strikerOptions = battingPlayers.filter(
     (player) =>
-      !outIds.includes(idOf(player)) &&
+      eligiblePlayer(player, selection.strikerId) &&
       (idOf(player) === selection.strikerId ||
         idOf(player) !== selection.nonStrikerId)
   );
   const nonStrikerOptions = battingPlayers.filter(
     (player) =>
-      !outIds.includes(idOf(player)) &&
+      eligiblePlayer(player, selection.nonStrikerId) &&
       (idOf(player) === selection.nonStrikerId ||
         idOf(player) !== selection.strikerId)
   );
@@ -587,6 +596,141 @@ function ScoreSetupForm({
               ? "Set next bowler"
               : "Start innings"}
       </button>
+      {replacement && retiredHurtBatters.length > 0 && (
+        <div className={`${innerClass} flex flex-wrap items-end gap-3 p-3`} style={innerStyle}>
+          <label className="min-w-52 flex-1 text-sm font-medium text-zinc-300">
+            Resume a retired-hurt batter
+            <select
+              className={`${selectClass} mt-2`}
+              style={selectStyle}
+              value={resumePlayerId}
+              onChange={(event) => setResumePlayerId(event.target.value)}
+              disabled={saving}
+            >
+              <option value="">Select batter</option>
+              {retiredHurtBatters.map((player) => (
+                <option key={idOf(player)} value={idOf(player)}>
+                  {getPlayerName(player)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className={primaryButtonClass}
+            style={primaryButtonStyle}
+            disabled={saving || !resumePlayerId}
+            onClick={() => onResume(resumePlayerId)}
+          >
+            Resume Batting
+          </button>
+        </div>
+      )}
+    </form>
+  );
+}
+
+function RetiredHurtPanel({
+  innings,
+  batters,
+  eligibleBatters,
+  onCancel,
+  onSubmit,
+  disabled,
+}) {
+  const [playerId, setPlayerId] = useState(idOf(innings.strikerId));
+  const [replacementPlayerId, setReplacementPlayerId] = useState("");
+  const [reason, setReason] = useState("INJURY");
+
+  function submit(event) {
+    event.preventDefault();
+    if (!playerId || !replacementPlayerId) return;
+    onSubmit({
+      action: "RETIRE_HURT",
+      playerId,
+      replacementPlayerId,
+      reason,
+    });
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      className="grid gap-4 rounded-xl border border-amber-300/25 bg-amber-300/5 p-4 md:grid-cols-2"
+    >
+      <label className="grid content-start gap-2 text-sm font-medium text-zinc-300">
+        Active batter
+        <select
+          className={selectClass}
+          style={selectStyle}
+          value={playerId}
+          onChange={(event) => setPlayerId(event.target.value)}
+          disabled={disabled}
+          required
+        >
+          <option value="">Select batter</option>
+          {batters.map((batter) => (
+            <option key={batter.id} value={batter.id}>
+              {batter.name} ({batter.role})
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="grid content-start gap-2 text-sm font-medium text-zinc-300">
+        Reason
+        <select
+          className={selectClass}
+          style={selectStyle}
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          disabled={disabled}
+        >
+          <option value="INJURY">Injury</option>
+          <option value="UNABLE_TO_CONTINUE">Unable to continue</option>
+        </select>
+      </label>
+      <label className="grid content-start gap-2 text-sm font-medium text-zinc-300 md:col-span-2">
+        Incoming batter (has not batted)
+        <select
+          className={selectClass}
+          style={selectStyle}
+          value={replacementPlayerId}
+          onChange={(event) => setReplacementPlayerId(event.target.value)}
+          disabled={disabled}
+          required
+        >
+          <option value="">Select incoming batter</option>
+          {eligibleBatters.map((player) => (
+            <option key={idOf(player)} value={idOf(player)}>
+              {getPlayerName(player)}
+            </option>
+          ))}
+        </select>
+        {eligibleBatters.length === 0 && (
+          <span className="text-xs text-amber-200">
+            No eligible yet-to-bat replacement is available.
+          </span>
+        )}
+      </label>
+      <div className="flex flex-wrap gap-2 md:col-span-2">
+        <button
+          type="submit"
+          className={primaryButtonClass}
+          style={primaryButtonStyle}
+          disabled={disabled || !playerId || !replacementPlayerId}
+        >
+          Confirm Retired Hurt
+        </button>
+        <button
+          type="button"
+          className={secondaryButtonClass}
+          style={secondaryButtonStyle}
+          onClick={onCancel}
+          disabled={disabled}
+        >
+          Cancel
+        </button>
+      </div>
     </form>
   );
 }
@@ -904,8 +1048,12 @@ function WicketPanel({
 }
 
 export default function ScoringSetup({ user }) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const { matchId } = useParams();
   const pendingDeliveryRequestRef = useRef(null);
+  const pendingRetirementRequestRef = useRef(null);
+  const retirementSubmissionInProgressRef = useRef(false);
 
   function clearPendingDeliveryRequest(storageKey) {
     pendingDeliveryRequestRef.current = null;
@@ -913,6 +1061,14 @@ export default function ScoringSetup({ user }) {
       sessionStorage.removeItem(storageKey);
     } catch (storageError) {
       console.error("Unable to clear the completed delivery request key:", storageError);
+    }
+    function clearPendingRetirementRequest(storageKey) {
+      pendingRetirementRequestRef.current = null;
+      try {
+        sessionStorage.removeItem(storageKey);
+      } catch (storageError) {
+        console.error("Unable to clear the completed retirement request key:", storageError);
+      }
     }
   }
   const [innings, setInnings] = useState(null);
@@ -931,6 +1087,11 @@ export default function ScoringSetup({ user }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [startingSecondInnings, setStartingSecondInnings] = useState(false);
+  const [endingInnings, setEndingInnings] = useState(false);
+  const [showEndInningsDialog, setShowEndInningsDialog] = useState(false);
+  const [cancellingMatch, setCancellingMatch] = useState(false);
+  const [showCancelMatchDialog, setShowCancelMatchDialog] = useState(false);
+  const [cancellationReason, setCancellationReason] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [mode, setMode] = useState("NORMAL");
@@ -945,6 +1106,31 @@ export default function ScoringSetup({ user }) {
   const [permissionFresh, setPermissionFresh] = useState(false);
   const [permissionRefreshError, setPermissionRefreshError] = useState("");
   const keyHandlerRef = useRef(() => {});
+  const managementScrollApplied = useRef(false);
+  const endInningsRequestRef = useRef(null);
+  const cancellationRequestRef = useRef(null);
+
+  useEffect(() => {
+    managementScrollApplied.current = false;
+  }, [matchId]);
+
+  useEffect(() => {
+    if (
+      location.hash !== "#scoring-access" ||
+      !match ||
+      managementScrollApplied.current
+    ) {
+      return;
+    }
+
+    managementScrollApplied.current = true;
+    requestAnimationFrame(() => {
+      document.getElementById("scoring-access")?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+    });
+  }, [location.hash, match]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1062,6 +1248,12 @@ export default function ScoringSetup({ user }) {
 
   useEffect(() => {
     let cancelled = false;
+    let checkingOperation = false;
+    let checkingFinalization = false;
+    let checkingCancellation = false;
+    const resolvedOperations = new Set();
+    const resolvedFinalizations = new Set();
+    const resolvedCancellations = new Set();
     const refreshMatchAccess = async () => {
       try {
         const result = await apiRequest(
@@ -1081,6 +1273,148 @@ export default function ScoringSetup({ user }) {
           }
           setPermissionFresh(true);
           setPermissionRefreshError("");
+
+          const pendingOperation = user
+            ? result.data.pendingOperation
+            : null;
+          if (
+            pendingOperation?.status === "DRAINING" &&
+            pendingOperation.operationId &&
+            !checkingOperation &&
+            !resolvedOperations.has(pendingOperation.operationId)
+          ) {
+            checkingOperation = true;
+            try {
+              const statusResult = await apiRequest(
+                `${MATCH_API_URL}/${matchId}/scoring-access/operations/${pendingOperation.operationId}`
+              );
+              const status = statusResult.data?.operationStatus;
+              if (status && status !== "DRAINING" && !cancelled) {
+                resolvedOperations.add(pendingOperation.operationId);
+                if (status === "COMPLETED") {
+                  setError("");
+                  setSuccess(
+                    pendingOperation.action === "RECLAIM"
+                      ? "Scoring access reclaimed."
+                      : "Scoring access transferred."
+                  );
+                } else {
+                  setSuccess("");
+                  setError(
+                    status === "CANCELLED_TARGET_INELIGIBLE"
+                      ? pendingOperation.action === "RECLAIM"
+                        ? "Scoring access reclaim was cancelled because the owner account is no longer active."
+                        : "Scoring access transfer was cancelled because the target is no longer active."
+                      : "Scoring access change was cancelled because the match is no longer eligible."
+                  );
+                }
+                setReloadKey((key) => key + 1);
+              }
+            } catch (statusError) {
+              if (!cancelled) {
+                setPermissionRefreshError(
+                  statusError.message ||
+                    "Unable to refresh scoring access operation status."
+                );
+              }
+            } finally {
+              checkingOperation = false;
+            }
+          }
+
+          const pendingFinalization = user
+            ? result.data.pendingFinalization
+            : null;
+          if (
+            pendingFinalization?.operationId &&
+            !checkingFinalization &&
+            !resolvedFinalizations.has(pendingFinalization.operationId)
+          ) {
+            checkingFinalization = true;
+            try {
+              const statusResult = await apiRequest(
+                `${MATCH_API_URL}/${matchId}/finalization/${pendingFinalization.operationId}`
+              );
+              const status = statusResult.data?.operationStatus;
+              if (!cancelled && status === "COMPLETED") {
+                resolvedFinalizations.add(pendingFinalization.operationId);
+                setError("");
+                setSuccess("Match finalization completed. Loading the official result.");
+                setReloadKey((key) => key + 1);
+              } else if (!cancelled && status === "CANCELLED") {
+                resolvedFinalizations.add(pendingFinalization.operationId);
+                setSuccess("");
+                setError("Match finalization was cancelled; no official result was published.");
+              } else if (
+                !cancelled &&
+                status === "RECONCILIATION_REQUIRED"
+              ) {
+                setSuccess("");
+                setError(
+                  "Match finalization is blocked pending permit reconciliation. No result has been published."
+                );
+              }
+            } catch (statusError) {
+              if (!cancelled) {
+                setPermissionRefreshError(
+                  statusError.message ||
+                    "Unable to refresh match finalization status."
+                );
+              }
+            } finally {
+              checkingFinalization = false;
+            }
+          }
+
+          const pendingCancellation = user
+            ? result.data.pendingCancellation
+            : null;
+          if (
+            pendingCancellation?.operationId &&
+            !checkingCancellation &&
+            !resolvedCancellations.has(pendingCancellation.operationId)
+          ) {
+            checkingCancellation = true;
+            try {
+              const statusResult = await apiRequest(
+                `${MATCH_API_URL}/${matchId}/cancellation/operations/${pendingCancellation.operationId}`
+              );
+              const operation = statusResult.data;
+              if (!cancelled && operation?.operationStatus === "CANCELLED") {
+                resolvedCancellations.add(pendingCancellation.operationId);
+                cancellationRequestRef.current = null;
+                setMatch((current) => ({
+                  ...current,
+                  ...(operation.match || {}),
+                  scoringAccess: {
+                    ...current?.scoringAccess,
+                    permitGate: "CLOSED",
+                    pendingCancellation: null,
+                  },
+                }));
+                setSuccess("Match cancelled. Scorecard data has been preserved.");
+                setReloadKey((key) => key + 1);
+                window.dispatchEvent(new Event("matches-refresh"));
+              } else if (
+                !cancelled &&
+                operation?.operationStatus === "RECONCILIATION_REQUIRED"
+              ) {
+                setSuccess("");
+                setError(
+                  "Cancellation is paused until scoring operations can be reconciled safely. No match data was deleted."
+                );
+              }
+            } catch (statusError) {
+              if (!cancelled) {
+                setPermissionRefreshError(
+                  statusError.message ||
+                    "Unable to refresh match cancellation status."
+                );
+              }
+            } finally {
+              checkingCancellation = false;
+            }
+          }
         }
       } catch (refreshError) {
         if (!cancelled) {
@@ -1267,9 +1601,14 @@ export default function ScoringSetup({ user }) {
     Boolean(user?.id && match?.scoringAccess?.activeScorerId) &&
     idOf(match.scoringAccess.activeScorerId).toLowerCase() ===
       idOf(user.id).toLowerCase();
+  const isCancellationPending = Boolean(
+    match?.scoringAccess?.pendingCancellation
+  );
   const canManageScoring =
     isActiveScorer &&
     permissionFresh &&
+    match?.scoringAccess?.permitGate === "OPEN" &&
+    !match?.scoringAccess?.pendingCancellation &&
     match?.status !== "completed" &&
     match?.status !== "cancelled";
   const canScore =
@@ -1282,6 +1621,7 @@ export default function ScoringSetup({ user }) {
     (item) => item.inningsNumber === 2 && item.status === "COMPLETED"
   ) || (innings?.inningsNumber === 2 && innings.status === "COMPLETED");
   const canStartSecondInnings =
+    canManageScoring &&
     innings?.status === "COMPLETED" &&
     innings.inningsNumber === 1 &&
     match?.inningsPerTeam === 1 &&
@@ -1325,9 +1665,11 @@ export default function ScoringSetup({ user }) {
       setTargetScorerSearch("");
       setTargetScorerOptions([]);
       setSuccess(
-        action === "transfer"
-          ? "Scoring access transferred."
-          : "Scoring access reclaimed."
+        result.data.operationStatus === "DRAINING"
+          ? "Scoring access change is pending while active scoring operations finish."
+          : action === "transfer"
+            ? "Scoring access transferred."
+            : "Scoring access reclaimed."
       );
       setReloadKey((key) => key + 1);
     } catch (accessError) {
@@ -1347,6 +1689,21 @@ export default function ScoringSetup({ user }) {
       role: batter.role,
       name: getPlayerName(batter.player),
     }));
+  const battingFigureIds = new Set(
+    (innings?.battingFigures || []).map((figure) => idOf(figure.playerId))
+  );
+  const activeBatterIds = new Set(
+    [idOf(innings?.strikerId), idOf(innings?.nonStrikerId)].filter(Boolean)
+  );
+  const eligibleIncomingBatters = battingSquad.filter(
+    (player) =>
+      !battingFigureIds.has(idOf(player)) &&
+      !activeBatterIds.has(idOf(player))
+  );
+  const retiredHurtBatters = battingSquad.filter((player) => {
+    const figure = playerFigure(innings?.battingFigures, player);
+    return figure?.retiredHurt && !figure.isOut;
+  });
 
   async function submitPlayerSelection(event) {
     event.preventDefault();
@@ -1416,6 +1773,107 @@ export default function ScoringSetup({ user }) {
       }
     } finally {
       setStartingSecondInnings(false);
+    }
+  }
+
+  async function endCurrentInnings() {
+    if (!innings?._id || !canManageScoring) return;
+    setError("");
+    setSuccess("");
+    setEndingInnings(true);
+
+    try {
+      if (!endInningsRequestRef.current) {
+        endInningsRequestRef.current = {
+          requestId: createDeliveryIdempotencyKey(),
+        };
+      }
+      await apiRequest(
+        `${SCORING_API_URL}/api/v1/innings/${innings._id}/end`,
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": endInningsRequestRef.current.requestId,
+          },
+          body: JSON.stringify({ reason: "MANUAL_END" }),
+        }
+      );
+      endInningsRequestRef.current = null;
+      setShowEndInningsDialog(false);
+      setSuccess("Innings ended. Refreshing the scorecard.");
+      setReloadKey((key) => key + 1);
+      window.dispatchEvent(new Event("matches-refresh"));
+    } catch (endError) {
+      if (endError.status && endError.status < 500) {
+        endInningsRequestRef.current = null;
+        if (endError.status === 409) {
+          setReloadKey((key) => key + 1);
+        }
+      }
+      setError(endError.message || "Unable to end the innings.");
+    } finally {
+      setEndingInnings(false);
+    }
+  }
+
+  async function cancelCurrentMatch() {
+    if (!isMatchOwner || match?.status === "cancelled") return;
+    setError("");
+    setSuccess("");
+    setCancellingMatch(true);
+
+    const reason = cancellationReason.trim();
+
+    try {
+      if (
+        !cancellationRequestRef.current ||
+        cancellationRequestRef.current.reason !== reason
+      ) {
+        cancellationRequestRef.current = {
+          requestId: createDeliveryIdempotencyKey(),
+          reason,
+        };
+      }
+      const request = cancellationRequestRef.current;
+      const result = await apiRequest(
+        `${MATCH_API_URL}/${matchId}/cancel`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": request.requestId },
+          body: JSON.stringify({ reason: request.reason }),
+        }
+      );
+      setShowCancelMatchDialog(false);
+      setSuccess(
+        result.data?.operationStatus === "CANCELLED"
+          ? "Match cancelled. Scorecard data has been preserved."
+          : "Cancellation is waiting for active scoring operations to drain."
+      );
+      if (result.data?.operationStatus === "CANCELLED") {
+        cancellationRequestRef.current = null;
+        setReloadKey((key) => key + 1);
+        window.dispatchEvent(new Event("matches-refresh"));
+      } else {
+        setMatch((current) => ({
+          ...current,
+          scoringAccess: {
+            ...current?.scoringAccess,
+            pendingCancellation: result.data,
+            permitGate: "DRAINING",
+          },
+        }));
+      }
+    } catch (cancelError) {
+      if (cancelError.status && cancelError.status < 500) {
+        cancellationRequestRef.current = null;
+        if (cancelError.status === 409) {
+          setReloadKey((key) => key + 1);
+          window.dispatchEvent(new Event("matches-refresh"));
+        }
+      }
+      setError(cancelError.message || "Unable to cancel the match.");
+    } finally {
+      setCancellingMatch(false);
     }
   }
 
@@ -1495,6 +1953,81 @@ export default function ScoringSetup({ user }) {
       }
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function submitRetirement(payload) {
+    if (retirementSubmissionInProgressRef.current) return;
+    retirementSubmissionInProgressRef.current = true;
+    setError("");
+    setSuccess("");
+    setSaving(true);
+    const requestFingerprint = JSON.stringify(payload);
+    const storageKey = `cricket-scoring:pending-retirement:${matchId}:${innings._id}`;
+    let pendingRequest;
+    try {
+      pendingRequest =
+        pendingRetirementRequestRef.current?.storageKey === storageKey
+          ? pendingRetirementRequestRef.current
+          : JSON.parse(sessionStorage.getItem(storageKey) || "null");
+      if (pendingRequest && pendingRequest.fingerprint !== requestFingerprint) {
+        throw new Error(
+          "Retry or resolve the pending retirement before submitting a different action."
+        );
+      }
+      if (!pendingRequest) {
+        pendingRequest = {
+          storageKey,
+          fingerprint: requestFingerprint,
+          key: createDeliveryIdempotencyKey(),
+        };
+      } else {
+        pendingRequest.storageKey = storageKey;
+      }
+      if (!sessionStorage.getItem(storageKey)) {
+        sessionStorage.setItem(storageKey, JSON.stringify(pendingRequest));
+      }
+      pendingRetirementRequestRef.current = pendingRequest;
+    } catch (requestError) {
+      setError(requestError.message || "Unable to prepare a safe retirement request.");
+      setSaving(false);
+      retirementSubmissionInProgressRef.current = false;
+      return;
+    }
+
+    try {
+      const result = await apiRequest(
+        `${SCORING_API_URL}/api/v1/innings/${innings._id}/retirements`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": pendingRequest.key },
+          body: JSON.stringify(payload),
+        }
+      );
+      clearPendingRetirementRequest(storageKey);
+      setInnings(result.data);
+      setSelection({
+        strikerId: idOf(result.data.strikerId),
+        nonStrikerId: idOf(result.data.nonStrikerId),
+        bowlerId: idOf(result.data.currentBowlerId),
+      });
+      setMode("NORMAL");
+      setSuccess(
+        payload.action === "RETIRE_HURT"
+          ? "Batter retired hurt; replacement is now batting."
+          : "Retired-hurt batter resumed batting."
+      );
+    } catch (saveError) {
+      if (saveError.code === "DELIVERY_OPERATION_ABORTED") {
+        clearPendingRetirementRequest(storageKey);
+      }
+      setError(saveError.message || "Unable to record the batter retirement.");
+      if (saveError.message?.includes("active scorer")) {
+        setReloadKey((key) => key + 1);
+      }
+    } finally {
+      setSaving(false);
+      retirementSubmissionInProgressRef.current = false;
     }
   }
 
@@ -1601,6 +2134,41 @@ export default function ScoringSetup({ user }) {
   function renderInningsScorecard(item) {
     const itemBattingTeam = teamById[idOf(item.battingTeamId).toLowerCase()];
     const itemBowlingTeam = teamById[idOf(item.bowlingTeamId).toLowerCase()];
+    const itemBattingTeamId = idOf(item.battingTeamId).toLowerCase();
+    const itemSquadIds =
+      itemBattingTeamId === idOf(match?.teamAId).toLowerCase()
+        ? match?.teamAPlayerIds || []
+        : match?.teamBPlayerIds || [];
+    const itemFigures = item.battingFigures || [];
+    const itemFiguresByPlayer = new Map(
+      itemFigures.map((figure) => [idOf(figure.playerId).toLowerCase(), figure])
+    );
+    const itemPlayerIds = [
+      ...new Set([
+        ...itemSquadIds.map((playerId) => idOf(playerId)),
+        ...itemFigures.map((figure) => idOf(figure.playerId)),
+      ]),
+    ];
+    const battingRows = itemPlayerIds.map((playerId) => {
+      const figure = itemFiguresByPlayer.get(playerId.toLowerCase());
+      const isActive =
+        playerId.toLowerCase() === idOf(item.strikerId).toLowerCase() ||
+        playerId.toLowerCase() === idOf(item.nonStrikerId).toLowerCase();
+      const status = figure?.isOut
+        ? figure.dismissalType
+          ? `out · ${figure.dismissalType.replaceAll("_", " ").toLowerCase()}`
+          : "out"
+        : figure?.retiredHurt
+          ? "retired hurt"
+          : isActive
+            ? item.status === "COMPLETED"
+              ? "not out"
+              : "batting"
+            : figure
+              ? "not out"
+              : "yet to bat";
+      return { playerId, figure, status };
+    });
     const extras = item.extras || {};
     const extrasKeys = ["wides", "noBalls", "byes", "legByes", "penaltyRuns"];
     const extrasAvailable = extrasKeys.every((key) =>
@@ -1660,43 +2228,42 @@ export default function ScoringSetup({ user }) {
             </p>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-left text-sm">
+            <table className="w-full min-w-[640px] text-left text-sm">
               <thead className="text-zinc-400">
                 <tr>
-                  {["Batter", "R", "B", "4s", "6s", "SR"].map((heading) => (
+                  {["Batter", "Status", "R", "B", "4s", "6s", "SR"].map((heading) => (
                     <th key={heading} className="px-2 py-2 font-medium">{heading}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {(item.battingFigures || []).length ? (
-                  item.battingFigures.map((figure) => {
-                    const batter = playersById[idOf(figure.playerId)];
-                    const balls = figure.ballsFaced;
+                {battingRows.length ? (
+                  battingRows.map(({ playerId, figure, status }) => {
+                    const batter = playersById[playerId];
+                    const runs = figure?.runs ?? 0;
+                    const balls = figure?.ballsFaced ?? 0;
                     const strikeRate =
-                      Number.isInteger(figure.runs) &&
+                      Number.isInteger(runs) &&
                       Number.isInteger(balls) &&
                       balls > 0
-                        ? ((figure.runs / balls) * 100).toFixed(2)
+                        ? ((runs / balls) * 100).toFixed(2)
                         : "—";
                     return (
-                      <tr key={idOf(figure.playerId)} className="border-t border-white/10">
+                      <tr key={playerId} className="border-t border-white/10">
                         <td className="px-2 py-2.5 font-semibold">
                           {batter ? getPlayerName(batter) : "Player"}
-                          {figure.isOut && figure.dismissalType
-                            ? ` · ${figure.dismissalType.replaceAll("_", " ").toLowerCase()}`
-                            : ""}
                         </td>
-                        <td className="px-2 py-2.5">{Number.isInteger(figure.runs) ? figure.runs : "—"}</td>
+                        <td className="px-2 py-2.5 text-zinc-300">{status}</td>
+                        <td className="px-2 py-2.5">{Number.isInteger(runs) ? runs : "—"}</td>
                         <td className="px-2 py-2.5">{Number.isInteger(balls) ? balls : "—"}</td>
-                        <td className="px-2 py-2.5">{Number.isInteger(figure.fours) ? figure.fours : "—"}</td>
-                        <td className="px-2 py-2.5">{Number.isInteger(figure.sixes) ? figure.sixes : "—"}</td>
+                        <td className="px-2 py-2.5">{figure && Number.isInteger(figure.fours) ? figure.fours : "—"}</td>
+                        <td className="px-2 py-2.5">{figure && Number.isInteger(figure.sixes) ? figure.sixes : "—"}</td>
                         <td className="px-2 py-2.5">{strikeRate}</td>
                       </tr>
                     );
                   })
                 ) : (
-                  <tr><td colSpan="6" className="px-2 py-4 text-zinc-400">No batting figures available.</td></tr>
+                  <tr><td colSpan="7" className="px-2 py-4 text-zinc-400">No batting figures available.</td></tr>
                 )}
               </tbody>
             </table>
@@ -1901,6 +2468,9 @@ export default function ScoringSetup({ user }) {
   const resultPending =
     match?.status === "completed" ||
     (inningsTwoCompleted && !finalizedMatch);
+  const finalizationStatus =
+    match?.scoringAccess?.pendingFinalization?.status ||
+    match?.finalizationStatus;
 
   const footerText =
     error ||
@@ -1960,6 +2530,19 @@ export default function ScoringSetup({ user }) {
               {tossLine && <p className="truncate text-sm text-zinc-400">{tossLine}</p>}
             </div>
 
+            {match?.status && (
+              <span
+                className={`rounded-full border px-3 py-2 text-xs font-bold uppercase tracking-wide ${
+                  match.status === "cancelled"
+                    ? "border-red-300/30 bg-red-300/10 text-red-200"
+                    : match.status === "completed"
+                      ? "border-zinc-300/20 bg-white/5 text-zinc-300"
+                      : "border-emerald-300/30 bg-emerald-300/10 text-emerald-200"
+                }`}
+              >
+                Match {match.status.replaceAll("_", " ")}
+              </span>
+            )}
             {innings && (
               <>
                 <span
@@ -2019,8 +2602,26 @@ export default function ScoringSetup({ user }) {
           </div>
         </header>
 
+        {match?.status === "cancelled" && (
+          <section className="mx-3 mt-3 rounded-xl border border-red-300/25 bg-red-300/10 px-4 py-3 text-sm text-red-100">
+            <h2 className="font-bold">Match cancelled</h2>
+            <p className="mt-1 text-red-100/80">
+              {match.cancellation?.cancelledAt
+                ? `Cancelled ${new Date(match.cancellation.cancelledAt).toLocaleString()}`
+                : "Cancellation time unavailable"}
+              {match.cancellation?.reason
+                ? ` · Reason: ${match.cancellation.reason}`
+                : ""}
+            </p>
+          </section>
+        )}
+
         {match && (
-          <section className="mx-3 mt-3 rounded-xl border px-4 py-3" style={panelStyle}>
+          <section
+            id="scoring-access"
+            className="mx-3 mt-3 rounded-xl border px-4 py-3"
+            style={panelStyle}
+          >
             <div className="flex flex-wrap items-start gap-4">
               <div className="min-w-[220px] flex-1">
                 <h2 className="font-bold">Scoring access</h2>
@@ -2032,16 +2633,23 @@ export default function ScoringSetup({ user }) {
                 <p className="mt-1 text-xs text-zinc-400">
                   {permissionRefreshError
                     ? `${permissionRefreshError} Scoring controls are disabled until permission is confirmed.`
+                    : match.status === "cancelled"
+                    ? "This match is cancelled and read-only."
+                    : match.status === "completed"
+                    ? "This match is completed and read-only."
                     : !user
                     ? "You are viewing this match. Sign in as the active scorer to update the score."
                     : isActiveScorer
-                      ? "You are the active scorer and may update this score."
+                      ? match.scoringAccess?.permitGate === "OPEN"
+                        ? "You are the active scorer and may update this score."
+                        : "Scoring actions are paused while match operations are safely resolving."
                       : isMatchOwner
                         ? "You own this match but are not the active scorer. You may reclaim scoring."
                         : "You are viewing this match. Only the active scorer can update the score."}
                 </p>
               </div>
-              {(isMatchOwner || isActiveScorer) &&
+              {permissionFresh &&
+                (isMatchOwner || isActiveScorer) &&
                 match.status !== "completed" &&
                 match.status !== "cancelled" && (
                   <div className="flex flex-wrap items-end gap-2">
@@ -2056,7 +2664,12 @@ export default function ScoringSetup({ user }) {
                         placeholder="Search by name"
                         className="mt-1 w-full rounded-lg border bg-black/20 px-3 py-2 text-sm text-white"
                         style={{ borderColor: C.innerBorder }}
-                        disabled={changingAccess}
+                        disabled={
+                          changingAccess ||
+                          !permissionFresh ||
+                          match.scoringAccess?.permitGate !== "OPEN" ||
+                          isCancellationPending
+                        }
                       />
                       {targetScorerSearch.trim().length >= 2 && (
                         <select
@@ -2064,7 +2677,12 @@ export default function ScoringSetup({ user }) {
                           onChange={(event) => setTargetScorerId(event.target.value)}
                           className="mt-2 w-full rounded-lg border bg-black/20 px-3 py-2 text-sm text-white"
                           style={{ borderColor: C.innerBorder }}
-                          disabled={changingAccess}
+                          disabled={
+                            changingAccess ||
+                            !permissionFresh ||
+                            match.scoringAccess?.permitGate !== "OPEN" ||
+                            isCancellationPending
+                          }
                         >
                           <option value="">
                             {targetScorerOptions.length
@@ -2088,7 +2706,12 @@ export default function ScoringSetup({ user }) {
                       type="button"
                       className={`${primaryButtonClass} px-4 py-2.5`}
                       style={primaryButtonStyle}
-                      disabled={changingAccess}
+                      disabled={
+                        changingAccess ||
+                        !permissionFresh ||
+                        match.scoringAccess?.permitGate !== "OPEN" ||
+                        isCancellationPending
+                      }
                       onClick={() => void changeScoringAccess("transfer")}
                     >
                       Transfer scoring
@@ -2098,14 +2721,51 @@ export default function ScoringSetup({ user }) {
                         type="button"
                         className={`${secondaryButtonClass} py-2.5`}
                         style={secondaryButtonStyle}
-                        disabled={changingAccess}
+                        disabled={
+                          changingAccess ||
+                          !permissionFresh ||
+                          match.scoringAccess?.permitGate !== "OPEN" ||
+                          isCancellationPending
+                        }
                         onClick={() => void changeScoringAccess("reclaim")}
                       >
                         Reclaim scoring
                       </button>
                     )}
+                    {isMatchOwner && (
+                      <button
+                        type="button"
+                        className={`${primaryButtonClass} px-4 py-2.5`}
+                        style={{
+                          background: "rgba(239, 68, 68, 0.18)",
+                          border: "1px solid rgba(248, 113, 113, 0.55)",
+                          color: "#fecaca",
+                        }}
+                        disabled={
+                          cancellingMatch ||
+                          changingAccess ||
+                          isCancellationPending ||
+                          match.scoringAccess?.permitGate !== "OPEN" ||
+                          Boolean(match.scoringAccess?.pendingChange) ||
+                          Boolean(match.scoringAccess?.pendingFinalization) ||
+                          !permissionFresh
+                        }
+                        onClick={() => {
+                          setCancellationReason("");
+                          cancellationRequestRef.current = null;
+                          setShowCancelMatchDialog(true);
+                        }}
+                      >
+                        Cancel Match
+                      </button>
+                    )}
                   </div>
                 )}
+              {isCancellationPending && (
+                <p className="w-full text-sm text-amber-200">
+                  Cancellation is pending safe reconciliation of active scoring operations.
+                </p>
+              )}
             </div>
           </section>
         )}
@@ -2191,11 +2851,21 @@ export default function ScoringSetup({ user }) {
             )}
             <section className={`${panelClass} p-5 sm:p-6`} style={panelStyle}>
               <h2 className="text-xl font-bold">
-                Result Pending
+                {finalizationStatus === "RECONCILIATION_REQUIRED"
+                  ? "Finalization Requires Reconciliation"
+                  : finalizationStatus === "CANCELLED"
+                    ? "Finalization Cancelled"
+                    : "Result Pending"}
               </h2>
               <p className="mt-2 text-sm leading-6 text-zinc-300">
                 {match?.status === "completed"
                   ? "The match is marked completed, but Match Service has not returned a valid persisted result. No winner is shown."
+                  : finalizationStatus === "CANCELLED"
+                    ? "Match finalization was cancelled because the match is no longer eligible. No official result or awards were published."
+                  : finalizationStatus === "RECONCILIATION_REQUIRED"
+                    ? "Finalization is blocked because an active scoring permit has no definitive journal outcome or the permit records are inconsistent. No result or awards will be published until it is resolved."
+                    : ["DRAINING", "FINALIZING"].includes(finalizationStatus)
+                      ? "Finalization is pending while active scoring operations finish. The official result will appear only after it is durably persisted."
                   : "Both innings are complete. The official match result has not been finalized yet."}
               </p>
               <button
@@ -2210,6 +2880,28 @@ export default function ScoringSetup({ user }) {
           </div>
         ) : (
           <div className="flex flex-1 flex-col gap-3 p-3">
+            {canManageScoring &&
+              (innings.status === "READY" || innings.status === "IN_PROGRESS") && (
+                <section
+                  className={`${panelClass} flex flex-wrap items-center justify-between gap-3 px-4 py-3`}
+                  style={panelStyle}
+                >
+                  <div>
+                    <h2 className="font-bold">Innings controls</h2>
+                    <p className="mt-1 text-xs text-zinc-400">
+                      End the current innings without recording a delivery or changing player statistics.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={endingInnings || saving}
+                    onClick={() => setShowEndInningsDialog(true)}
+                    className={`${secondaryButtonClass} border-amber-300/40 py-2.5 text-amber-100 hover:bg-amber-300/10 ${focusRing}`}
+                  >
+                    {endingInnings ? "Ending innings..." : "End Innings"}
+                  </button>
+                </section>
+              )}
             {/* Score summary */}
             <section className={`${panelClass} shrink-0 px-6 py-3`} style={panelStyle}>
               <div className="flex flex-wrap items-center gap-x-10 gap-y-3">
@@ -2354,6 +3046,33 @@ export default function ScoringSetup({ user }) {
                     </tbody>
                   </table>
                 </div>
+                <div className="mt-3 flex flex-wrap gap-2" aria-label="Batting statuses">
+                  {battingSquad.map((player) => {
+                    const playerId = idOf(player);
+                    const figure = playerFigure(innings.battingFigures, playerId);
+                    const isActive = [idOf(innings.strikerId), idOf(innings.nonStrikerId)]
+                      .includes(playerId);
+                    const status = figure?.isOut
+                      ? "Out"
+                      : figure?.retiredHurt
+                        ? "Retired Hurt"
+                        : isActive
+                          ? innings.status === "COMPLETED"
+                            ? "Not out"
+                            : "Batting"
+                          : figure
+                            ? "Not out"
+                            : "Yet to Bat";
+                    return (
+                      <span
+                        key={playerId}
+                        className="rounded-full border border-white/10 px-2.5 py-1 text-xs text-zinc-300"
+                      >
+                        {getPlayerName(player)} · {status}
+                      </span>
+                    );
+                  })}
+                </div>
               </section>
 
               <section className={`${panelClass} p-4`} style={panelStyle}>
@@ -2428,7 +3147,31 @@ export default function ScoringSetup({ user }) {
                     </>
                   )}
                 </h2>
-                <span className="text-zinc-400">Over {overNumber}</span>
+                <div className="flex items-center gap-3">
+                  {!needsPlayerSetup &&
+                    innings.status !== "COMPLETED" &&
+                    mode !== "RETIRE_HURT" && (
+                      <button
+                        type="button"
+                        className={`${secondaryButtonClass} px-3 py-2`}
+                        style={secondaryButtonStyle}
+                        disabled={
+                          saving ||
+                          !canScore ||
+                          eligibleIncomingBatters.length === 0
+                        }
+                        onClick={() => setMode("RETIRE_HURT")}
+                        title={
+                          eligibleIncomingBatters.length
+                            ? "Replace an active batter with a yet-to-bat player"
+                            : "No yet-to-bat replacement is available"
+                        }
+                      >
+                        Retired Hurt
+                      </button>
+                    )}
+                  <span className="text-zinc-400">Over {overNumber}</span>
+                </div>
               </div>
 
               {needsPlayerSetup && innings.status !== "COMPLETED" ? (
@@ -2447,6 +3190,13 @@ export default function ScoringSetup({ user }) {
                       saving={saving}
                       onSubmit={submitPlayerSelection}
                       replacement={Boolean(innings.awaitingBatter)}
+                      retiredHurtBatters={retiredHurtBatters}
+                      onResume={(playerId) =>
+                        void submitRetirement({
+                          action: "RESUME_BATTING",
+                          playerId,
+                        })
+                      }
                     />
                   </div>
                   {statusLine}
@@ -2455,6 +3205,14 @@ export default function ScoringSetup({ user }) {
                 <div className="flex min-h-0 flex-1 flex-col gap-3">
                   <div className="flex flex-1 items-center justify-center rounded-xl border border-amber-400/20 bg-amber-400/10 p-5 text-amber-100">
                     This innings is complete. Further deliveries are disabled.
+                    {innings.completionReason === "MANUAL_END" && (
+                      <span className="ml-1 text-sm text-amber-100/80">
+                        Manually ended
+                        {innings.completedAt
+                          ? ` · ${new Date(innings.completedAt).toLocaleString()}`
+                          : ""}
+                      </span>
+                    )}
                   </div>
                   {canStartSecondInnings && (
                     <button
@@ -2474,6 +3232,13 @@ export default function ScoringSetup({ user }) {
                       )}
                     </button>
                   )}
+                  {innings.inningsNumber === 1 &&
+                    match?.inningsPerTeam === 1 &&
+                    !["T10", "T20", "ODI", "CUSTOM"].includes(match?.format) && (
+                      <p className="text-sm text-amber-200">
+                        Automatic second-innings setup is not supported for this match format.
+                      </p>
+                    )}
                   {statusLine}
                 </div>
               ) : (
@@ -2498,7 +3263,18 @@ export default function ScoringSetup({ user }) {
                       </div>
                     )}
 
-                    {mode === "WICKET" ? (
+                    {mode === "RETIRE_HURT" ? (
+                      <div className="min-h-0 flex-1" style={{ minHeight: 260 }}>
+                        <RetiredHurtPanel
+                          innings={innings}
+                          batters={activeBatters}
+                          eligibleBatters={eligibleIncomingBatters}
+                          disabled={saving}
+                          onCancel={() => setMode("NORMAL")}
+                          onSubmit={(payload) => void submitRetirement(payload)}
+                        />
+                      </div>
+                    ) : mode === "WICKET" ? (
                       <div className="min-h-0 flex-1" style={{ minHeight: 260 }}>
                         <WicketPanel
                           key={`${idOf(innings.strikerId)}-${innings.legalBalls}`}
@@ -2587,6 +3363,114 @@ export default function ScoringSetup({ user }) {
                 </p>
               </section>
             )}
+          </div>
+        )}
+        {showEndInningsDialog && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+            role="presentation"
+          >
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="end-innings-title"
+              className="w-full max-w-md rounded-2xl border p-5 shadow-2xl"
+              style={panelStyle}
+            >
+              <h2 id="end-innings-title" className="text-lg font-bold">
+                End this innings?
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-zinc-300">
+                This will complete the innings as a manual end. No delivery, wicket, or player statistic will be added. The action cannot be undone.
+              </p>
+              <div className="mt-5 flex justify-end gap-3">
+                <button
+                  type="button"
+                  className={`${secondaryButtonClass} py-2.5`}
+                  disabled={endingInnings}
+                  onClick={() => setShowEndInningsDialog(false)}
+                >
+                  Keep scoring
+                </button>
+                <button
+                  type="button"
+                  className={`${primaryButtonClass} py-2.5`}
+                  style={primaryButtonStyle}
+                  disabled={endingInnings || !canManageScoring}
+                  onClick={() => void endCurrentInnings()}
+                >
+                  {endingInnings ? "Ending..." : "End Innings"}
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+        {showCancelMatchDialog && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+            role="presentation"
+          >
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="cancel-match-title"
+              className="w-full max-w-md rounded-2xl border p-5 shadow-2xl"
+              style={panelStyle}
+            >
+              <h2 id="cancel-match-title" className="text-lg font-bold text-red-200">
+                Cancel this match?
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-zinc-300">
+                The match will become read-only. All innings, deliveries, and scorecard data will be preserved. In-flight scoring operations must be safely reconciled before cancellation completes.
+              </p>
+              <label className="mt-4 block text-sm font-semibold text-zinc-300">
+                Cancellation reason (optional)
+                <textarea
+                  value={cancellationReason}
+                  onChange={(event) => {
+                    setCancellationReason(event.target.value.slice(0, 500));
+                    cancellationRequestRef.current = null;
+                  }}
+                  maxLength={500}
+                  rows={3}
+                  className="mt-2 w-full resize-y rounded-xl border bg-black/20 px-3 py-2 text-sm text-white"
+                  style={{ borderColor: C.innerBorder }}
+                  disabled={cancellingMatch}
+                />
+              </label>
+              <div className="mt-5 flex justify-end gap-3">
+                <button
+                  type="button"
+                  className={`${secondaryButtonClass} py-2.5`}
+                  disabled={cancellingMatch}
+                  onClick={() => setShowCancelMatchDialog(false)}
+                >
+                  Keep match
+                </button>
+                <button
+                  type="button"
+                  className={`${primaryButtonClass} py-2.5`}
+                  style={{
+                    background: "rgba(239, 68, 68, 0.2)",
+                    border: "1px solid rgba(248, 113, 113, 0.65)",
+                    color: "#fecaca",
+                  }}
+                  disabled={
+                    cancellingMatch ||
+                    !permissionFresh ||
+                    !isMatchOwner ||
+                    match?.status === "completed" ||
+                    match?.status === "cancelled" ||
+                    match?.scoringAccess?.permitGate !== "OPEN" ||
+                    Boolean(match?.scoringAccess?.pendingChange) ||
+                    Boolean(match?.scoringAccess?.pendingFinalization)
+                  }
+                  onClick={() => void cancelCurrentMatch()}
+                >
+                  {cancellingMatch ? "Cancelling..." : "Confirm Cancel Match"}
+                </button>
+              </div>
+            </section>
           </div>
         )}
       </div>

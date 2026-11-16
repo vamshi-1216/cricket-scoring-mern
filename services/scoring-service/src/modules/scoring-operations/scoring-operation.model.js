@@ -54,6 +54,14 @@ scoringOperationSchema.index(
   { unique: true, name: "match_request_unique" }
 );
 scoringOperationSchema.index(
+  { matchId: 1, permitId: 1 },
+  {
+    unique: true,
+    name: "match_permit_unique",
+    partialFilterExpression: { permitId: { $type: "string" } },
+  }
+);
+scoringOperationSchema.index(
   { status: 1, updatedAt: 1 },
   { name: "status_updated_recovery" }
 );

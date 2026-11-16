@@ -154,6 +154,46 @@ export async function getScoringOperationByRequest(matchId, requestId) {
   }).lean();
 }
 
+export async function getScoringOperationForPermit(matchId, permitId) {
+  if (!isObjectId(matchId)) {
+    throw new ScoringOperationError("Invalid match ID.", 400);
+  }
+  if (typeof permitId !== "string" || !uuidSchema.test(permitId)) {
+    throw new ScoringOperationError("Invalid scoring permit ID.", 400);
+  }
+
+  const operations = await ScoringOperation.find({
+    matchId: new mongoose.Types.ObjectId(matchId),
+    permitId,
+  })
+    .select("operationId matchId permitId status outcome")
+    .limit(2)
+    .lean();
+  if (operations.length > 1) {
+    throw new ScoringOperationError(
+      "Multiple scoring operations reference this permit.",
+      409
+    );
+  }
+  if (operations.length === 0) {
+    return {
+      matchId: String(matchId),
+      permitId,
+      found: false,
+    };
+  }
+
+  const [operation] = operations;
+  return {
+    matchId: String(operation.matchId),
+    permitId: operation.permitId,
+    found: true,
+    operationId: operation.operationId,
+    status: operation.status,
+    outcome: operation.outcome,
+  };
+}
+
 export async function transitionScoringOperation(
   operationId,
   nextStatus,

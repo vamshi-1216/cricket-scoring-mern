@@ -175,3 +175,66 @@ export function calculateDelivery(innings, input, { maxLegalBalls, maxWickets })
     beforeState: before,
   };
 }
+
+export function calculateRetirement(innings, event, operationId) {
+  const state = {
+    strikerId: idString(innings.strikerId),
+    nonStrikerId: idString(innings.nonStrikerId),
+    battingFigures: (innings.battingFigures || []).map((figure) => ({
+      ...figure,
+      playerId: idString(figure.playerId),
+    })),
+    awaitingBatter: Boolean(innings.awaitingBatter),
+  };
+  const playerId = idString(event.playerId);
+  let position;
+
+  if (event.action === "RETIRE_HURT") {
+    position = state.strikerId === playerId ? "STRIKER" : "NON_STRIKER";
+    if (position === "STRIKER") {
+      state.strikerId = idString(event.replacementPlayerId);
+    } else {
+      state.nonStrikerId = idString(event.replacementPlayerId);
+    }
+
+    updateFigure(state.battingFigures, playerId, (figure) => ({
+      runs: figure.runs || 0,
+      ballsFaced: figure.ballsFaced || 0,
+      fours: figure.fours || 0,
+      sixes: figure.sixes || 0,
+      isOut: Boolean(figure.isOut),
+      dismissalType: figure.dismissalType || null,
+      retiredHurt: true,
+    }));
+  } else {
+    position = state.strikerId === null ? "STRIKER" : "NON_STRIKER";
+    if (position === "STRIKER") {
+      state.strikerId = playerId;
+    } else {
+      state.nonStrikerId = playerId;
+    }
+
+    const batter = state.battingFigures.find(
+      (figure) => idString(figure.playerId) === playerId
+    );
+    batter.retiredHurt = false;
+  }
+
+  state.awaitingBatter = false;
+  return {
+    state,
+    retirementEvent: {
+      operationId,
+      eventType:
+        event.action === "RETIRE_HURT" ? "RETIRED_HURT" : "RESUMED_BATTING",
+      playerId,
+      replacementPlayerId:
+        event.action === "RETIRE_HURT"
+          ? idString(event.replacementPlayerId)
+          : null,
+      position,
+      reason: event.action === "RETIRE_HURT" ? event.reason : null,
+      createdAt: new Date(),
+    },
+  };
+}

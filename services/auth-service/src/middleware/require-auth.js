@@ -69,6 +69,7 @@ export async function requireAuth(req, res, next) {
       role: user.role,
       emailVerified: user.emailVerified,
       phoneVerified: user.phoneVerified,
+      sessionVersion: currentVersion,
     };
 
     return next();

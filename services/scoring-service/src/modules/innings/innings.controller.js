@@ -50,3 +50,43 @@ export async function recordDelivery(req, res, next) {
     next(error);
   }
 }
+
+export async function recordRetirement(req, res, next) {
+  try {
+    const scorecard = await inningsService.recordRetirement(
+      req.params.inningsId,
+      req.body,
+      req.scoringAuthorization,
+      req.user.id,
+      req.get("Idempotency-Key")
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Batter retirement recorded successfully.",
+      data: scorecard,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function endInnings(req, res, next) {
+  try {
+    const innings = await inningsService.endInnings(
+      req.params.inningsId,
+      req.body,
+      req.scoringAuthorization,
+      req.user.id,
+      req.get("Idempotency-Key")
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Innings ended successfully.",
+      data: innings,
+    });
+  } catch (error) {
+    next(error);
+  }
+}

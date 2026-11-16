@@ -5,6 +5,8 @@ import { env } from "./config/env.js";
 import matchRoutes from "./modules/matches/match.routes.js";
 import inningsRoutes from "./modules/innings/innings.routes.js";
 
+import statsExportRoutes from "./modules/stats/stats-export.routes.js";
+
 const app = express();
 
 app.disable("x-powered-by");
@@ -32,6 +34,8 @@ app.get("/health", (req, res) => {
 
 app.use("/api/v1/matches", matchRoutes);
 app.use("/api/v1/innings", inningsRoutes);
+
+app.use("/api/v1/internal/stats", statsExportRoutes);
 
 app.use((req, res) => {
   res.status(404).json({
