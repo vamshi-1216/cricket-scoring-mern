@@ -1316,7 +1316,8 @@ async function initializeFirstInnings(matchId, cookie) {
     );
   }
 
-  if (!response.ok || result.success !== true || !result.data?._id) {
+  const innings = result.data?.innings || result.data;
+  if (!response.ok || result.success !== true || !innings?._id) {
     const statusCode = response.status >= 400 && response.status < 500 ? 400 : 503;
     const detail =
       result.message || "Scoring Service did not confirm first innings initialization.";
@@ -1432,7 +1433,8 @@ export async function updateMatch(id, payload, userId, cookie) {
     "battingFirstId",
   ];
   const changesScoringConfiguration = scoringConfigurationFields.some((field) =>
-    Object.hasOwn(updates, field)
+    Object.hasOwn(updates, field) &&
+    String(updates[field] ?? "") !== String(existing[field] ?? "")
   );
   const initializesInnings =
     updates.tossWinnerId !== undefined ||
