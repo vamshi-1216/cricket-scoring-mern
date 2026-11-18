@@ -114,7 +114,8 @@ export default function MatchSetup() {
   }, []);
 
   useEffect(() => {
-    loadTeams();
+    const timerId = window.setTimeout(() => void loadTeams(), 0);
+    return () => window.clearTimeout(timerId);
   }, [loadTeams]);
 
   function updateField(event) {

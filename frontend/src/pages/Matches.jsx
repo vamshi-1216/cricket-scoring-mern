@@ -601,7 +601,7 @@ export default function Matches({ user }) {
   }, [currentUserId]);
 
   useEffect(() => {
-    void loadMatches();
+    const initialLoadTimer = window.setTimeout(() => void loadMatches(), 0);
     const refreshMatches = () => {
       if (!document.hidden) void loadMatches({ silent: true });
     };
@@ -609,6 +609,7 @@ export default function Matches({ user }) {
     window.addEventListener("focus", refreshMatches);
     window.addEventListener("matches-refresh", refreshMatches);
     return () => {
+      window.clearTimeout(initialLoadTimer);
       window.clearInterval(intervalId);
       window.removeEventListener("focus", refreshMatches);
       window.removeEventListener("matches-refresh", refreshMatches);

@@ -146,7 +146,10 @@ export default function Teams() {
     }
   }, []);
 
-  useEffect(() => { loadTeams(); }, [loadTeams]);
+  useEffect(() => {
+    const timerId = window.setTimeout(() => void loadTeams(), 0);
+    return () => window.clearTimeout(timerId);
+  }, [loadTeams]);
 
   // Success messages dismiss themselves
   useEffect(() => {

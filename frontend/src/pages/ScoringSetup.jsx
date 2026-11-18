@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { ArrowLeft, CircleAlert, Keyboard, LoaderCircle, Trophy } from "lucide-react";
 
 const SCORING_API_URL =
@@ -1049,7 +1049,6 @@ function WicketPanel({
 
 export default function ScoringSetup({ user }) {
   const location = useLocation();
-  const navigate = useNavigate();
   const { matchId } = useParams();
   const pendingDeliveryRequestRef = useRef(null);
   const pendingRetirementRequestRef = useRef(null);
@@ -1062,13 +1061,14 @@ export default function ScoringSetup({ user }) {
     } catch (storageError) {
       console.error("Unable to clear the completed delivery request key:", storageError);
     }
-    function clearPendingRetirementRequest(storageKey) {
-      pendingRetirementRequestRef.current = null;
-      try {
-        sessionStorage.removeItem(storageKey);
-      } catch (storageError) {
-        console.error("Unable to clear the completed retirement request key:", storageError);
-      }
+  }
+
+  function clearPendingRetirementRequest(storageKey) {
+    pendingRetirementRequestRef.current = null;
+    try {
+      sessionStorage.removeItem(storageKey);
+    } catch (storageError) {
+      console.error("Unable to clear the completed retirement request key:", storageError);
     }
   }
   const [innings, setInnings] = useState(null);
@@ -1244,7 +1244,7 @@ export default function ScoringSetup({ user }) {
     return () => {
       cancelled = true;
     };
-  }, [matchId, reloadKey, user?.id]);
+  }, [matchId, reloadKey, user]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1432,18 +1432,17 @@ export default function ScoringSetup({ user }) {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [matchId, user?.id]);
+  }, [matchId, user]);
 
   useEffect(() => {
     const query = targetScorerSearch.trim();
-    if (!user || query.length < 2) {
-      setTargetScorerOptions([]);
-      setTargetScorerSearchError("");
-      return undefined;
-    }
-
     let cancelled = false;
     const timerId = window.setTimeout(async () => {
+      if (!user || query.length < 2) {
+        setTargetScorerOptions([]);
+        setTargetScorerSearchError("");
+        return;
+      }
       try {
         const result = await apiRequest(
           `${AUTH_API_URL}/scoring-transfer-targets?query=${encodeURIComponent(query)}`
@@ -1462,12 +1461,12 @@ export default function ScoringSetup({ user }) {
           setTargetScorerSearchError(searchError.message || "Unable to search users.");
         }
       }
-    }, 300);
+    }, query.length < 2 || !user ? 0 : 300);
     return () => {
       cancelled = true;
       window.clearTimeout(timerId);
     };
-  }, [targetScorerSearch, user?.id]);
+  }, [targetScorerSearch, user]);
 
   const teamById = useMemo(
     () => Object.fromEntries(teams.map((team) => [idOf(team).toLowerCase(), team])),
@@ -2042,31 +2041,33 @@ export default function ScoringSetup({ user }) {
   }
 
   // Keyboard shortcuts: 0-6 for runs, w/n/b/l/p/k for modifiers, Esc to clear.
-  keyHandlerRef.current = (event) => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
-    const tag = event.target?.tagName;
-    if (["INPUT", "SELECT", "TEXTAREA"].includes(tag)) return;
-    if (padDisabled) return;
+  useEffect(() => {
+    keyHandlerRef.current = (event) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const tag = event.target?.tagName;
+      if (["INPUT", "SELECT", "TEXTAREA"].includes(tag)) return;
+      if (padDisabled) return;
 
-    const key = event.key.toLowerCase();
-    if (key === "escape") {
-      setMode("NORMAL");
-      return;
-    }
-    const modifier = MODIFIERS.find((item) => item.key === key);
-    if (modifier) {
-      event.preventDefault();
-      toggleMode(modifier.id);
-      return;
-    }
-    if (/^[0-9]$/.test(key) && mode !== "WICKET") {
-      const runs = Number(key);
-      if (MODE_RUNS[mode]?.includes(runs)) {
-        event.preventDefault();
-        pressRuns(runs);
+      const key = event.key.toLowerCase();
+      if (key === "escape") {
+        setMode("NORMAL");
+        return;
       }
-    }
-  };
+      const modifier = MODIFIERS.find((item) => item.key === key);
+      if (modifier) {
+        event.preventDefault();
+        toggleMode(modifier.id);
+        return;
+      }
+      if (/^[0-9]$/.test(key) && mode !== "WICKET") {
+        const runs = Number(key);
+        if (MODE_RUNS[mode]?.includes(runs)) {
+          event.preventDefault();
+          pressRuns(runs);
+        }
+      }
+    };
+  });
 
   useEffect(() => {
     const listener = (event) => keyHandlerRef.current(event);

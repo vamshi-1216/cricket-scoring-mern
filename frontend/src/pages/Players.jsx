@@ -117,7 +117,8 @@ export default function Players({ onLogout }) {
   }, []);
 
   useEffect(() => {
-    loadPlayers();
+    const timerId = window.setTimeout(() => void loadPlayers(), 0);
+    return () => window.clearTimeout(timerId);
   }, [loadPlayers]);
 
   const activeCount = players.filter((player) => player.isActive).length;
