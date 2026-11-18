@@ -8,12 +8,7 @@ import {
 } from "../innings/innings.service.js";
 import { getScoringOperationForPermit } from "../scoring-operations/scoring-operation.service.js";
 
-import { calculateMatchAwards } from "../awards/awards.calculator.js";
-
-import { Innings } from "../innings/innings.model.js";
-import { Delivery } from "../deliveries/delivery.model.js";
-
-import { env } from "../../config/env.js";
+import { calculateAwardsForMatch } from "../awards/awards.service.js";
 
 function getErrorStatus(error) {
   return Number.isInteger(error?.statusCode)
@@ -115,30 +110,7 @@ export async function getPermitOperation(req, res, next) {
 
 export async function getAwards(req, res, next) {
   try {
-    const innings = await Innings.find({
-      matchId: req.params.matchId,
-    })
-      .sort({ inningsNumber: 1 })
-      .lean();
-
-    if (innings.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No innings found for this match.",
-      });
-    }
-
-    const deliveries = await Delivery.find({
-      matchId: req.params.matchId,
-    })
-      .sort({ inningsId: 1, sequence: 1, _id: 1 })
-      .lean();
-
-    const awards = await calculateMatchAwards({
-      matchId: req.params.matchId,
-      innings,
-      deliveries,
-    });
+    const awards = await calculateAwardsForMatch(req.params.matchId);
 
     res.status(200).json({
       success: true,
