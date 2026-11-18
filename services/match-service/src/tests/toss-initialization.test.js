@@ -36,7 +36,7 @@ function mockDependencies(t, savedToss, inningsExist) {
     const innings = { _id: "507f1f77bcf86cd799439015", matchId };
     const data = options.method === "POST"
       ? { innings, created: !inningsExist }
-      : { innings: inningsExist ? [innings] : [] };
+      : inningsExist ? [innings] : [];
     return new Response(JSON.stringify({ success: true, data }), {
       status: options.method === "POST" ? 201 : 200,
       headers: { "Content-Type": "application/json" },

@@ -862,14 +862,15 @@ async function getScoringInnings(matchId) {
     );
   }
 
-  if (body?.success !== true || !Array.isArray(body.data?.innings)) {
+  const innings = Array.isArray(body?.data) ? body.data : body?.data?.innings;
+  if (body?.success !== true || !Array.isArray(innings)) {
     throw new MatchServiceError(
       "Scoring Service returned an invalid innings response.",
       502
     );
   }
 
-  return body.data.innings;
+  return innings;
 }
 
 function hasExactKeys(value, expectedKeys) {

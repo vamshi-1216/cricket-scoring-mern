@@ -4,7 +4,7 @@ import test from "node:test";
 process.env.MONGODB_URI = "mongodb://127.0.0.1:27017/scoring_unit_tests";
 const { Innings } = await import("../modules/innings/innings.model.js");
 const { Delivery } = await import("../modules/deliveries/delivery.model.js");
-const { getAwards } = await import("../modules/matches/match.controller.js");
+const { getAwards, getMatchInnings } = await import("../modules/matches/match.controller.js");
 
 const matchId = "507f1f77bcf86cd799439011";
 const teamAId = "507f1f77bcf86cd799439012";
@@ -66,4 +66,17 @@ test("awards controller rejects unfinished innings instead of returning null awa
   }, (error) => { failure = error; });
   assert.equal(failure.statusCode, 409);
   assert.match(failure.message, /Both innings must be completed/);
+});
+
+test("innings list endpoint returns its records directly in data", async (t) => {
+  mockMatchData(t);
+  let body;
+  await getMatchInnings({ params: { matchId } }, {
+    status(code) { assert.equal(code, 200); return this; },
+    json(value) { body = value; },
+  }, (error) => { throw error; });
+  assert.equal(body.success, true);
+  assert.ok(Array.isArray(body.data));
+  assert.equal(body.data.length, 2);
+  assert.equal(body.data[1].inningsNumber, 2);
 });

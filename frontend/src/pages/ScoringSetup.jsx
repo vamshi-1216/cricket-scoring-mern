@@ -1163,7 +1163,9 @@ export default function ScoringSetup({ user }) {
             .then((result) => ({ result }))
             .catch((playerError) => ({ error: playerError })),
         ]);
-        const allInnings = inningsResult.data?.innings;
+        const allInnings = Array.isArray(inningsResult.data)
+          ? inningsResult.data
+          : inningsResult.data?.innings;
         const currentInnings = Array.isArray(allInnings)
           ? [...allInnings].sort(
                 (left, right) => right.inningsNumber - left.inningsNumber
@@ -1224,7 +1226,11 @@ export default function ScoringSetup({ user }) {
               ? "Player names could not be loaded. Fielding selectors will identify squad members by ID."
               : ""
           );
-          setRecentDeliveries(historyResult?.data?.deliveries || []);
+          setRecentDeliveries(
+            Array.isArray(historyResult?.data)
+              ? historyResult.data
+              : historyResult?.data?.deliveries || []
+          );
           setSelection({
             strikerId: idOf(currentInnings?.strikerId),
             nonStrikerId: idOf(currentInnings?.nonStrikerId),
@@ -1351,7 +1357,7 @@ export default function ScoringSetup({ user }) {
               ) {
                 setSuccess("");
                 setError(
-                  "Match finalization is blocked pending permit reconciliation. No result has been published."
+                  "Match finalization requires recovery. Refresh the match status to check progress."
                 );
               }
             } catch (statusError) {
@@ -1756,10 +1762,8 @@ export default function ScoringSetup({ user }) {
         { method: "POST" }
       );
 
-      if (
-        !result.data?._id ||
-        result.data.inningsNumber !== 2
-      ) {
+      const secondInnings = result.data?.innings || result.data;
+      if (!secondInnings?._id || secondInnings.inningsNumber !== 2) {
         throw new Error("Scoring Service did not return the second innings.");
       }
 
@@ -1938,7 +1942,11 @@ export default function ScoringSetup({ user }) {
         const historyResult = await apiRequest(
           `${SCORING_API_URL}/api/v1/matches/${matchId}/innings/${innings._id}/deliveries`
         );
-        setRecentDeliveries(historyResult.data?.deliveries || []);
+        setRecentDeliveries(
+          Array.isArray(historyResult.data)
+            ? historyResult.data
+            : historyResult.data?.deliveries || []
+        );
       } catch {
         setError("Delivery was recorded, but delivery history could not be refreshed.");
       }
@@ -2853,7 +2861,7 @@ export default function ScoringSetup({ user }) {
             <section className={`${panelClass} p-5 sm:p-6`} style={panelStyle}>
               <h2 className="text-xl font-bold">
                 {finalizationStatus === "RECONCILIATION_REQUIRED"
-                  ? "Finalization Requires Reconciliation"
+                  ? "Finalization Needs Recovery"
                   : finalizationStatus === "CANCELLED"
                     ? "Finalization Cancelled"
                     : "Result Pending"}
@@ -2864,7 +2872,7 @@ export default function ScoringSetup({ user }) {
                   : finalizationStatus === "CANCELLED"
                     ? "Match finalization was cancelled because the match is no longer eligible. No official result or awards were published."
                   : finalizationStatus === "RECONCILIATION_REQUIRED"
-                    ? "Finalization is blocked because an active scoring permit has no definitive journal outcome or the permit records are inconsistent. No result or awards will be published until it is resolved."
+                    ? "Finalization is waiting for a service response, scoring data validation, or scoring operation recovery. Refresh the match status to check progress."
                     : ["DRAINING", "FINALIZING"].includes(finalizationStatus)
                       ? "Finalization is pending while active scoring operations finish. The official result will appear only after it is durably persisted."
                   : "Both innings are complete. The official match result has not been finalized yet."}
