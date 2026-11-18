@@ -2514,6 +2514,14 @@ async function advanceFinalization(matchId, operationId) {
           ? "AWARDS_UNAVAILABLE"
           : "SCORING_SERVICE_UNAVAILABLE"
         : "FINALIZATION_DATA_INVALID";
+    console.error("Match finalization attempt failed", {
+      matchId: String(matchId),
+      operationId,
+      failureReason,
+      errorName: error.name,
+      message: error.message,
+      validationPaths: Object.keys(error.errors || {}),
+    });
     await updateFinalizationClaim(
       matchId,
       operationId,
