@@ -5,6 +5,7 @@ import { requireInternalService } from "../../middleware/require-internal-servic
 
 const router = Router();
 
+router.get("/score-summaries", controller.getScoreSummaries);
 router.post("/:matchId/innings", requireActiveScorer, controller.initializeInnings);
 router.post("/:matchId/innings/2", requireActiveScorer, controller.initializeSecondInnings);
 router.get("/:matchId/scorecard", controller.getScorecard);

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
+    "test": "node --test",
     "check": "node --check src/server.js && node --check src/app.js"
   },
   "dependencies": {

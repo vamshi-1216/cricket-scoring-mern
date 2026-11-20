@@ -36,6 +36,42 @@ A cricket scoring application built with the MERN stack, with a microservices-or
 - **Testing:** Node.js test runner, MongoDB Memory Server
 - **Version control:** Git and GitHub
 
+## Kafka match result notifications
+
+Newly finalized matches appear in **Recent results** on the Matches page. Match Service
+records a pending event in MongoDB in the same transaction as the result. The notification
+worker publishes it to `cricket.match-finalized.v1` and consumes that topic to build the
+feed served by `GET /api/v1/matches/notifications`. Unpublished events stay pending during
+broker outages. Kafka can redeliver a result, and the feed stores one entry per match.
+
+With Docker Desktop running, start Kafka from the repository root:
+
+```sh
+docker compose -f infrastructure/docker-compose.yml up -d --wait kafka
+```
+
+Keep the app services running as usual. In another terminal, run the worker using the
+Match Service's existing `.env` and MongoDB database:
+
+```sh
+cd services/match-service
+npm ci
+npm run notifications
+```
+
+To run the worker inside Docker instead, set `NOTIFICATIONS_MONGODB_URI` in your shell
+to the same match database using a hostname the container can reach. For a MongoDB replica
+set, its advertised member addresses must also be reachable from the container. Then run
+this from the repository root:
+
+```sh
+docker compose -f infrastructure/docker-compose.yml --profile notifications up -d --build
+```
+
+Finalize a match through scoring, then refresh Matches or check the feed endpoint.
+The page refreshes every 30 seconds while visible. Matches finalized before this feature
+was added do not generate feed entries.
+
 ## Repository Structure
 
 ```text

@@ -4,7 +4,7 @@ services:
     container_name: cricket-kafka
     hostname: kafka
     ports:
-      - "29092:29092"
+      - "127.0.0.1:29092:29092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -28,6 +28,24 @@ services:
 
     volumes:
       - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "bash", "-ec", "exec 3<>/dev/tcp/localhost/9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  notification-worker:
+    profiles: ["notifications"]
+    build:
+      context: ../services/match-service
+      dockerfile: Dockerfile.notifications
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      MONGODB_URI: ${NOTIFICATIONS_MONGODB_URI:-}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
 
 volumes:
   kafka_data:

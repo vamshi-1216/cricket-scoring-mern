@@ -15,6 +15,7 @@ import Players from "./pages/Players.jsx";
 import MatchSetup from "./pages/MatchSetup.jsx";
 import MatchSquadSetup from "./pages/MatchSquadSetup.jsx";
 import Matches from "./pages/Matches.jsx";
+import Stats from "./pages/Stats.jsx";
 import ScoringSetup from "./pages/ScoringSetup.jsx";
 import ForgotPassword from "./pages/ForgotPassword.jsx";
 import ResetPassword from "./pages/ResetPassword.jsx";
@@ -250,6 +251,7 @@ function AppContent() {
           path="/matches"
           element={<Matches user={user} />}
         />
+        <Route path="/stats/:matchId?" element={<Stats />} />
 
         <Route
           path="/matches/:matchId/scoring"

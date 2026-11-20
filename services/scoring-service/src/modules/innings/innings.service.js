@@ -2126,6 +2126,20 @@ export async function getMatchScorecard(id) {
   return { ...innings, overs: deriveOvers(innings.legalBalls) };
 }
 
+export async function getMatchScoreSummaries(ids) {
+  const matchIds = typeof ids === "string" ? ids.split(",") : [];
+  if (matchIds.length === 0 || matchIds.length > 50) {
+    throw new ScoringServiceError("Provide between 1 and 50 match IDs.", 400);
+  }
+  const innings = await Innings.find({
+    matchId: { $in: matchIds.map((id) => parseId(matchIdSchema, id, "Invalid match ID.")) },
+  })
+    .select("matchId battingTeamId inningsNumber runs wickets legalBalls -_id")
+    .sort({ matchId: 1, inningsNumber: 1 })
+    .lean();
+  return innings.map((item) => ({ ...item, overs: deriveOvers(item.legalBalls) }));
+}
+
 export async function getMatchInnings(id) {
   const matchId = parseId(matchIdSchema, id, "Invalid match ID.");
   const innings = await Innings.find({ matchId })

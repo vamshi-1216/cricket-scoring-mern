@@ -590,6 +590,24 @@ explicit, stable display ordering after the metric tie.
 
 ## 9. Recommended Stats Service architecture
 
+The initial importer is available at
+`POST /api/v1/internal/stats/matches/:matchId/import` on Stats Service.
+Configure Stats Service from `services/stats-service/.env.example` and send
+the shared secret in the `X-Internal-Service-Secret` header. The endpoint
+returns `created`, `unchanged`, or `updated` with the stored match projection.
+It currently covers finalized one-innings-per-team limited-overs wins and
+ties. Historical records without a confirmed playing XI retain their
+scoring figures and report appearances as unknown.
+
+Open **Stats** in the app or visit `/stats` to browse imported matches.
+Select **Player stats**, or select a player in the Players directory, to see
+batting and bowling totals, rates and best figures by format. Older
+projections without maiden figures show a dash until they are re-imported.
+The page uses `GET /api/v1/stats/matches` and
+`GET /api/v1/stats/matches/:matchId`. Locally, start Stats Service on port
+4006. For a deployed frontend, run Stats Service behind the
+`/api/v1/stats/` reverse proxy or set `VITE_STATS_API_URL` before building.
+
 ### Ownership and read-model boundaries
 
 - A dedicated Stats Service and its own database own only derived,

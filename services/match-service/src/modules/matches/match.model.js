@@ -576,6 +576,8 @@ const matchSchema = new mongoose.Schema(
       default: null,
     },
 
+    resultNotificationPendingAt: { type: Date, select: false },
+
     playingXI: {
       type: playingXISchema,
       default: undefined,
@@ -601,6 +603,11 @@ const matchSchema = new mongoose.Schema(
     timestamps: true,
     versionKey: false,
   }
+);
+
+matchSchema.index(
+  { resultNotificationPendingAt: 1, _id: 1 },
+  { partialFilterExpression: { resultNotificationPendingAt: { $exists: true } } }
 );
 
 matchSchema.index({

@@ -10,6 +10,8 @@ const envSchema = z.object({
 
   MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
 
+  FRONTEND_ORIGIN: z.string().url().default("http://localhost:5173"),
+
   MATCH_SERVICE_URL: z
     .string()
     .url()

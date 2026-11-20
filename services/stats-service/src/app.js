@@ -4,13 +4,16 @@ import mongoose from "mongoose";
 
 import { env } from "./config/env.js";
 import { errorHandler } from "./middleware/error-handler.js";
+import matchImportRoutes from "./modules/imports/match-import.routes.js";
+import matchStatsRoutes from "./modules/matches/match-stats.routes.js";
+import playerStatsRoutes from "./modules/players/player-stats.routes.js";
 
 const app = express();
 
 // CORS configuration
 app.use(
   cors({
-    origin: env.FRONTEND_ORIGIN || "http://localhost:5173",
+    origin: env.FRONTEND_ORIGIN,
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -31,6 +34,10 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+app.use("/api/v1/internal/stats", matchImportRoutes);
+app.use("/api/v1/stats/matches", matchStatsRoutes);
+app.use("/api/v1/stats/players", playerStatsRoutes);
 
 // 404 handler
 app.use((req, res) => {

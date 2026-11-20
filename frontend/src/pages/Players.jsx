@@ -542,9 +542,9 @@ export default function Players({ onLogout }) {
                           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-emerald-400/15 bg-emerald-400/10 text-xs font-black text-emerald-300">
                             {getInitials(player.name)}
                           </div>
-                          <span className="font-semibold text-white">
+                          <Link to={`/stats?tab=players&player=${encodeURIComponent(player._id)}`} className="rounded font-semibold text-white hover:text-emerald-300 focus-visible:outline-2 focus-visible:outline-emerald-300">
                             {player.name}
-                          </span>
+                          </Link>
                         </div>
                       </td>
 

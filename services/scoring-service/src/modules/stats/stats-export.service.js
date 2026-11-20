@@ -86,9 +86,8 @@ function decodeCursor(cursor, matchId, inningsId, sourceRevision) {
 
 function getInningsCompleteness(innings) {
   return {
-    complete:
-      innings.status === "COMPLETED" &&
-      innings.completedAt instanceof Date,
+    // Older scoring records set the terminal status without a timestamp.
+    complete: innings.status === "COMPLETED",
     status: innings.status,
     completionReason: innings.completionReason ?? null,
     completedAt: innings.completedAt ?? null,

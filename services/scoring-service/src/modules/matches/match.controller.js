@@ -3,6 +3,7 @@ import {
   initializeFirstInnings,
   initializeSecondInnings as initializeSecondInningsService,
   getMatchScorecard,
+  getMatchScoreSummaries,
   getMatchInnings as getMatchInningsService,
   getDeliveryHistory as getDeliveryHistoryService,
 } from "../innings/innings.service.js";
@@ -58,6 +59,15 @@ export async function getScorecard(req, res, next) {
       success: true,
       data: scorecard,
     });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getScoreSummaries(req, res, next) {
+  try {
+    const data = await getMatchScoreSummaries(req.query.ids);
+    res.set("Cache-Control", "no-store").json({ success: true, data });
   } catch (error) {
     next(error);
   }

@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import {
 
@@ -278,6 +278,10 @@ export default function Home({ user, onLogout }) {
 
             </a>
 
+            <Link to="/stats" className="text-sm font-medium text-zinc-400 transition hover:text-white">
+              Stats
+            </Link>
+
             <button
                 type="button"
                 onClick={openTeams}
@@ -411,6 +415,10 @@ export default function Home({ user, onLogout }) {
                 Matches
 
               </a>
+
+              <Link to="/stats" onClick={() => setMenuOpen(false)} className="text-sm text-zinc-300">
+                Stats
+              </Link>
 
               <button
                   type="button"

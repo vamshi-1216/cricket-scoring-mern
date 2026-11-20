@@ -2,6 +2,7 @@ import { Router } from "express";
 import * as controller from "./match.controller.js";
 import { requireAuth } from "../../middleware/require-auth.js";
 import { requireInternalService } from "../../middleware/require-internal-service.js";
+import { ResultNotification } from "../notifications/result-notification.js";
 
 const router = Router();
 
@@ -14,6 +15,17 @@ function preventCaching(req, res, next) {
 
 router.post("/", requireAuth, controller.create);
 router.get("/", controller.list);
+router.get("/notifications", preventCaching, async (req, res, next) => {
+  try {
+    const data = await ResultNotification.find()
+      .sort({ finalizedAt: -1, _id: -1 })
+      .limit(5)
+      .lean();
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+});
 router.get(
   "/:matchId/scoring-access",
   preventCaching,

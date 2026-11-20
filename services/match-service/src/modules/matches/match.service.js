@@ -179,7 +179,8 @@ function accessView(match, currentUserId) {
 }
 
 function publicMatchView(match) {
-  const plainMatch = typeof match.toObject === "function" ? match.toObject() : match;
+  const { resultNotificationPendingAt, ...plainMatch } =
+    typeof match.toObject === "function" ? match.toObject() : match;
   if (!plainMatch.scoringAccess) return plainMatch;
   const scoringAccess = { ...plainMatch.scoringAccess };
   const pendingFinalization = scoringAccess.pendingFinalization;
@@ -2262,6 +2263,7 @@ async function persistFinalization(matchId, operationId, claimId, result) {
 
     match.status = "completed";
     match.result = result;
+    match.resultNotificationPendingAt = result.finalizedAt;
     match.scoringAccess.permitGate = "CLOSED";
     match.scoringAccess.finalizationHistory.push({
       operationId,
