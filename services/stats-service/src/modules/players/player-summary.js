@@ -1,6 +1,6 @@
 function emptySummary() {
   return {
-    importedMatches: 0, appearances: 0, unknownAppearances: 0,
+    importedMatches: 0, appearances: 0, recordedMatches: 0, unknownAppearances: 0,
     batting: {
       innings: 0, runs: 0, balls: 0, outs: 0, fours: 0, sixes: 0,
       highest: null, notOuts: 0, ducks: 0, fifties: 0, hundreds: 0,
@@ -17,6 +17,7 @@ function addMatch(summary, player) {
   summary.importedMatches++;
   if (player.appearance === true) summary.appearances++;
   if (player.appearance == null) summary.unknownAppearances++;
+  if (player.appearance === true || player.batting || player.bowling) summary.recordedMatches++;
 
   if (player.batting) {
     const { runs, ballsFaced, isOut, fours, sixes } = player.batting;
@@ -50,9 +51,10 @@ function addMatch(summary, player) {
     bowling.fourWicketHauls += Number(wickets === 4);
     bowling.fiveWicketHauls += Number(wickets >= 5);
     bowling.tenWicketMatches += Number(wickets >= 10);
-    bowling.maidens = bowling.maidens == null || maidens == null
+    const maidenCount = maidens ?? (legalBalls < 6 ? 0 : null);
+    bowling.maidens = bowling.maidens == null || maidenCount == null
       ? null
-      : bowling.maidens + maidens;
+      : bowling.maidens + maidenCount;
     if (!bowling.best || wickets > bowling.best.wickets ||
       (wickets === bowling.best.wickets && runsConceded < bowling.best.runs)) {
       bowling.best = { wickets, runs: runsConceded };

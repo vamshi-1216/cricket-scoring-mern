@@ -216,7 +216,7 @@ const careerFormats = ["TEST", "ODI", "T20", "T10", "CUSTOM"];
 const careerFormatLabel = { TEST: "Test", CUSTOM: "Custom" };
 const bestBowling = (best) => best ? `${best.wickets}/${best.runs}` : null;
 const battingRows = [
-  ["Matches", (summary) => summary.appearances],
+  ["Matches", (summary) => summary.recordedMatches],
   ["Innings", ({ batting }) => batting.innings],
   ["Runs", ({ batting }) => batting.runs],
   ["Balls", ({ batting }) => batting.balls],
@@ -235,7 +235,7 @@ const battingRows = [
   ["400s", ({ batting }) => batting.quadrupleHundreds],
 ];
 const bowlingRows = [
-  ["Matches", (summary) => summary.appearances],
+  ["Matches", (summary) => summary.recordedMatches],
   ["Innings", ({ bowling }) => bowling.innings],
   ["Balls", ({ bowling }) => bowling.balls],
   ["Runs conceded", ({ bowling }) => bowling.runs],
@@ -284,14 +284,19 @@ function CareerTable({ title, columns, rows }) {
 }
 
 function PlayerStats({ playerId, onSelect }) {
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(null);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const players = useStatsResource(playersUrl);
   const summary = useStatsResource(playerId ? `${statsUrl}/players/${encodeURIComponent(playerId)}` : null);
   const directory = players.result?.data?.players || [];
-  const query = search.trim().toLowerCase();
+  const query = (search ?? "").trim().toLowerCase();
   const matches = directory.filter((player) => player.name.toLowerCase().includes(query));
   const selectedPlayer = directory.find((player) => (player._id || player.id) === playerId);
-  const showSelected = playerId && !matches.some((player) => (player._id || player.id) === playerId);
+  const showSuggestions = suggestionsOpen && matches.length > 0;
+  const activeOptionId = showSuggestions && matches[activeIndex]
+    ? `stats-player-option-${activeIndex}`
+    : undefined;
   const data = summary.result?.data;
   const formats = data?.byFormat ?? {};
   const columns = data ? [
@@ -300,34 +305,87 @@ function PlayerStats({ playerId, onSelect }) {
       .map((format) => [careerFormatLabel[format] ?? format, formats[format]]),
   ] : [];
 
+  useEffect(() => {
+    if (activeOptionId) document.getElementById(activeOptionId)?.scrollIntoView({ block: "nearest" });
+  }, [activeOptionId]);
+
+  function closeSuggestions() {
+    setSuggestionsOpen(false);
+    setActiveIndex(-1);
+  }
+
+  function selectPlayer(player) {
+    setSearch(null);
+    closeSuggestions();
+    onSelect(player._id || player.id);
+  }
+
+  function handleSearchKey(event) {
+    if (event.key === "Escape" && suggestionsOpen) {
+      event.preventDefault();
+      closeSuggestions();
+    }
+    if (event.key === "Enter" && showSuggestions) {
+      event.preventDefault();
+      selectPlayer(matches[activeIndex] ?? matches[0]);
+    }
+    if (matches.length && ["ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault();
+      setSuggestionsOpen(true);
+      setActiveIndex((index) => event.key === "ArrowDown"
+        ? Math.min(index + 1, matches.length - 1)
+        : index < 0 ? matches.length - 1 : Math.max(index - 1, 0)
+      );
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className={`${panelClass} p-5 sm:p-6`}>
         <label htmlFor="stats-player-search" className="block font-semibold">Search players</label>
-        <input
-          id="stats-player-search"
-          type="search"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search by name"
-          aria-controls="stats-player"
-          className="mt-2 mb-4 block w-full max-w-md rounded-lg border border-white/15 bg-zinc-950 px-3 py-2.5 text-white focus-visible:outline-2 focus-visible:outline-emerald-300"
-        />
-        <label htmlFor="stats-player" className="block font-semibold">Player</label>
-        <select
-          id="stats-player"
-          value={playerId}
-          onChange={(event) => onSelect(event.target.value)}
-          disabled={!players.result?.data && !playerId}
-          className="mt-2 w-full max-w-md rounded-lg border border-white/15 bg-zinc-950 px-3 py-2.5 text-white focus-visible:outline-2 focus-visible:outline-emerald-300"
-        >
-          <option value="">{players.result ? "Select a player" : "Loading players…"}</option>
-          {showSelected && <option value={playerId}>{selectedPlayer?.name || `Player ${playerId.slice(-6)}`}</option>}
-          {matches.map((player) => (
-            <option key={player._id || player.id} value={player._id || player.id}>{player.name}</option>
-          ))}
-        </select>
-        {query && players.result?.data && matches.length === 0 && (
+        <div className="relative mt-2 max-w-md">
+          <input
+            id="stats-player-search"
+            type="text"
+            role="combobox"
+            autoComplete="off"
+            value={search ?? selectedPlayer?.name ?? ""}
+            onFocus={() => setSuggestionsOpen(true)}
+            onClick={() => setSuggestionsOpen(true)}
+            onBlur={closeSuggestions}
+            onKeyDown={handleSearchKey}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setActiveIndex(-1);
+              setSuggestionsOpen(true);
+            }}
+            placeholder={players.result ? "Search by name" : "Loading players…"}
+            aria-autocomplete="list"
+            aria-expanded={showSuggestions}
+            aria-controls={showSuggestions ? "stats-player-suggestions" : undefined}
+            aria-activedescendant={activeOptionId}
+            className="block w-full rounded-lg border border-white/15 bg-zinc-950 px-3 py-2.5 text-white focus-visible:outline-2 focus-visible:outline-emerald-300"
+          />
+          {showSuggestions && (
+            <ul id="stats-player-suggestions" role="listbox" aria-label="Matching players"
+              className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-white/15 bg-zinc-900 py-1 shadow-xl">
+              {matches.map((player, index) => (
+                <li
+                  key={player._id || player.id}
+                  id={`stats-player-option-${index}`}
+                  role="option"
+                  aria-selected={index === activeIndex}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectPlayer(player)}
+                  className={`cursor-pointer px-3 py-2 text-sm text-white hover:bg-emerald-400/15 ${index === activeIndex ? "bg-emerald-400/20" : ""}`}
+                >
+                  {player.name}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        {suggestionsOpen && query && players.result?.data && matches.length === 0 && (
           <p role="status" className="mt-3 text-sm text-zinc-400">No players match your search.</p>
         )}
         {players.result?.error && (
@@ -338,7 +396,7 @@ function PlayerStats({ playerId, onSelect }) {
         {players.result?.data && !directory.length && !playerId && (
           <p className="mt-3 text-sm text-zinc-400">No players are registered yet.</p>
         )}
-        <p className="mt-3 text-sm text-zinc-400">Career tables use imported completed matches. Match counts use confirmed playing XIs.</p>
+        <p className="mt-3 text-sm text-zinc-400">Match counts include confirmed playing XIs and recorded batting or bowling in imported matches.</p>
       </div>
       {playerId && !summary.result && <p role="status" className="text-zinc-400">Loading player stats…</p>}
       {summary.result?.error && (

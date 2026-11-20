@@ -21,6 +21,7 @@ test("career rates use cumulative balls, dismissals, and wickets", async () => {
 
   assert.equal(summary.importedMatches, 3);
   assert.equal(summary.appearances, 2);
+  assert.equal(summary.recordedMatches, 3);
   assert.equal(summary.unknownAppearances, 1);
   assert.deepEqual(summary.batting, {
     innings: 2, runs: 30, balls: 20, outs: 1, fours: 3, sixes: 1,
@@ -37,7 +38,17 @@ test("career rates use cumulative balls, dismissals, and wickets", async () => {
   assert.equal(summary.byFormat.T20.batting.runs, 24);
   assert.equal(summary.byFormat.T20.bowling.maidens, 1);
   assert.equal(summary.byFormat.ODI.batting.runs, 6);
+  assert.equal(summary.byFormat.ODI.recordedMatches, 1);
   assert.equal(summary.byFormat.ODI.bowling.maidens, null);
+});
+
+test("short bowling spells in older imports cannot contain a maiden", async () => {
+  const summary = await summarizePlayer([
+    match({ appearance: null, bowling: { legalBalls: 5, runsConceded: 0, wickets: 0 } }),
+    match({ appearance: null }),
+  ]);
+  assert.equal(summary.recordedMatches, 1);
+  assert.equal(summary.bowling.maidens, 0);
 });
 
 test("returns unknown rates when the denominator is zero", async () => {
